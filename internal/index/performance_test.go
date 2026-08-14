@@ -9,7 +9,7 @@ import (
 
 	_ "modernc.org/sqlite"
 
-	"github.com/yxwyoyoyo/session-try/internal/session"
+	"github.com/yxwyoyoyo/session-recall/internal/session"
 )
 
 func benchmarkStore(b *testing.B, count int) *Store {

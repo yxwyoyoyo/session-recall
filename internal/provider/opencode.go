@@ -11,7 +11,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/yxwyoyoyo/session-try/internal/session"
+	"github.com/yxwyoyoyo/session-recall/internal/session"
 )
 
 type OpenCode struct {

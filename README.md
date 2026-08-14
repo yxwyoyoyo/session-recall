@@ -1,15 +1,15 @@
-# session-try
+# session-recall
 
 Find and resume AI coding sessions by what you remember, not by an opaque
 session ID.
 
-`session-try` discovers sessions created by Claude Code, Codex, OpenCode, and
+`session-recall` discovers sessions created by Claude Code, Codex, OpenCode, and
 Kiro CLI, indexes their titles, original working directories, and user prompts
 locally, then presents one searchable terminal picker. Selecting a result
 starts the original harness in the original directory.
 
 ```text
-$ session-try "pane status"
+$ session-recall "pane status"
 
   opencode  Research Zellij plugin API       ~/Tools/zellij-vertical-tab · 2d
 > codex     Persist status across reattach   ~/Tools/zellij-vertical-tab · 3d
@@ -35,9 +35,10 @@ optional `.history`). The incompatible Kiro CLI v3 early-access format is not
 yet supported.
 
 Provider stores are opened read-only. The derived search index lives at the
-platform user-cache location (`~/Library/Caches/session-try/index.db` on
+platform user-cache location (`~/Library/Caches/session-recall/index.db` on
 macOS). Only user prompts are indexed; assistant responses and tool output are
-not copied into the index.
+not copied into the index. On first launch, `session-recall` automatically
+migrates an existing `session-try` index.
 
 ## Install
 
@@ -46,25 +47,25 @@ not copied into the index.
 Install and activate the latest GitHub release:
 
 ```sh
-mise use -g github:yxwyoyoyo/session-try
+mise use -g github:yxwyoyoyo/session-recall
 ```
 
 To install without changing your active mise configuration:
 
 ```sh
-mise install github:yxwyoyoyo/session-try@latest
+mise install github:yxwyoyoyo/session-recall@latest
 ```
 
 ### Homebrew
 
 ```sh
-brew install yxwyoyoyo/tap/session-try
+brew install yxwyoyoyo/tap/session-recall
 ```
 
 ### GitHub release
 
 Download a macOS, Linux, or Windows archive from the
-[GitHub releases page](https://github.com/yxwyoyoyo/session-try/releases).
+[GitHub releases page](https://github.com/yxwyoyoyo/session-recall/releases).
 Every release includes SHA-256 checksums.
 
 ## Build
@@ -79,20 +80,20 @@ mise run bench
 mise run release-snapshot
 ```
 
-The binary is written to `bin/session-try`.
+The binary is written to `bin/session-recall`.
 
 ## Usage
 
 ```text
-session-try                         browse recent sessions
-session-try "permission hook"       search session content
-session-try --provider codex        show only Codex sessions
-session-try --provider kiro         show only Kiro CLI sessions
-session-try --cwd                   show sessions for the current directory
-session-try --json "query"          return machine-readable results
-session-try index                   incrementally update the index
-session-try index --rebuild         rebuild all derived index data
-session-try doctor                  show provider and index status
+session-recall                         browse recent sessions
+session-recall "permission hook"       search session content
+session-recall --provider codex        show only Codex sessions
+session-recall --provider kiro         show only Kiro CLI sessions
+session-recall --cwd                   show sessions for the current directory
+session-recall --json "query"          return machine-readable results
+session-recall index                   incrementally update the index
+session-recall index --rebuild         rebuild all derived index data
+session-recall doctor                  show provider and index status
 ```
 
 The index refreshes automatically when the picker starts. JSONL files that

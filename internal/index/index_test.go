@@ -8,7 +8,7 @@ import (
 
 	_ "modernc.org/sqlite"
 
-	"github.com/yxwyoyoyo/session-try/internal/session"
+	"github.com/yxwyoyoyo/session-recall/internal/session"
 )
 
 func testStore(t *testing.T) *Store {
