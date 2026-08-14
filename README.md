@@ -87,10 +87,11 @@ The binary is written to `bin/session-recall`.
 ```text
 session-recall                         browse recent sessions
 session-recall "permission hook"       search session content
-session-recall --provider codex        show only Codex sessions
-session-recall --provider kiro         show only Kiro CLI sessions
-session-recall --cwd                   show sessions for the current directory
-session-recall --json "query"          return machine-readable results
+session-recall -p codex                show only Codex sessions
+session-recall -p kiro                 show only Kiro CLI sessions
+session-recall -c                      show sessions for the current directory
+session-recall -j "query"              return machine-readable results
+session-recall -n 20                   limit the number of results
 session-recall index                   incrementally update the index
 session-recall index --rebuild         rebuild all derived index data
 session-recall doctor                  show provider and index status

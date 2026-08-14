@@ -84,8 +84,9 @@ func TestKiroDiscoveryToSearchPipeline(t *testing.T) {
 	t.Setenv("LOCALAPPDATA", filepath.Join(home, "AppData", "Local"))
 	t.Setenv("KIRO_HOME", kiroHome)
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Chdir(home)
 	var stdout, stderr bytes.Buffer
-	if err := run([]string{"--json", "--provider", "kiro", "deployment"}, &stdout, &stderr); err != nil {
+	if err := run([]string{"-j", "-p", "kiro", "-c", "-n", "1", "deployment"}, &stdout, &stderr); err != nil {
 		t.Fatalf("run: %v\nstderr: %s", err, stderr.String())
 	}
 	var matches []session.Match

@@ -98,9 +98,13 @@ func run(args []string, stdout, stderr io.Writer) error {
 	flags.SetOutput(stderr)
 	var opt options
 	flags.StringVar(&opt.provider, "provider", "", "only show one provider")
+	flags.StringVar(&opt.provider, "p", "", "only show one provider (shorthand)")
 	flags.BoolVar(&opt.cwd, "cwd", false, "only show sessions from the current directory")
+	flags.BoolVar(&opt.cwd, "c", false, "only show sessions from the current directory (shorthand)")
 	flags.IntVar(&opt.limit, "limit", 50, "maximum number of results")
+	flags.IntVar(&opt.limit, "n", 50, "maximum number of results (shorthand)")
 	flags.BoolVar(&opt.json, "json", false, "print matches as JSON instead of opening the picker")
+	flags.BoolVar(&opt.json, "j", false, "print matches as JSON instead of opening the picker (shorthand)")
 	flags.BoolVar(&opt.refresh, "refresh", true, "refresh changed sessions before searching")
 	if err := flags.Parse(args); err != nil {
 		return err
@@ -252,9 +256,9 @@ Usage:
   session-recall doctor
 
 Options:
-  --provider NAME   limit to claude, codex, opencode, or kiro
-  --cwd             limit to the current directory
-  --limit N         maximum results (default 50)
-  --json            print results without opening the picker
-  --refresh=false   search the existing index without refreshing`)
+  -p, --provider NAME   limit to claude, codex, opencode, or kiro
+  -c, --cwd             limit to the current directory
+  -n, --limit N         maximum results (default 50)
+  -j, --json            print results without opening the picker
+      --refresh=false   search the existing index without refreshing`)
 }
