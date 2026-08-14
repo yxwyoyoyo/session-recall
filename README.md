@@ -39,6 +39,34 @@ platform user-cache location (`~/Library/Caches/session-try/index.db` on
 macOS). Only user prompts are indexed; assistant responses and tool output are
 not copied into the index.
 
+## Install
+
+### mise
+
+Install and activate the latest GitHub release:
+
+```sh
+mise use -g github:yxwyoyoyo/session-try
+```
+
+To install without changing your active mise configuration:
+
+```sh
+mise install github:yxwyoyoyo/session-try@latest
+```
+
+### Homebrew
+
+```sh
+brew install yxwyoyoyo/tap/session-try
+```
+
+### GitHub release
+
+Download a macOS, Linux, or Windows archive from the
+[GitHub releases page](https://github.com/yxwyoyoyo/session-try/releases).
+Every release includes SHA-256 checksums.
+
 ## Build
 
 The project pins Go through [mise](https://mise.jdx.dev/):
@@ -48,6 +76,7 @@ mise install
 mise run check
 mise run build
 mise run bench
+mise run release-snapshot
 ```
 
 The binary is written to `bin/session-try`.

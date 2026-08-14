@@ -13,6 +13,10 @@ go test ./...
 description = "Build the session-try binary"
 run = "go build -o bin/session-try ./cmd/session-try"
 
+[tasks.release-snapshot]
+description = "Build release archives locally without publishing"
+run = "mise exec github:goreleaser/goreleaser@2.17.1 -- goreleaser release --snapshot --clean"
+
 [tasks.bench]
 description = "Run repeatable microbenchmarks with allocation reporting"
 run = "go test -run '^$' -bench . -benchmem ./internal/..."
