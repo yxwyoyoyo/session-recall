@@ -1,4 +1,4 @@
-module github.com/yxwyoyoyo/session-try
+module github.com/yxwyoyoyo/session-recall
 
 go 1.26.0
 

@@ -8,8 +8,8 @@ import (
 
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/yxwyoyoyo/session-try/internal/index"
-	"github.com/yxwyoyoyo/session-try/internal/session"
+	"github.com/yxwyoyoyo/session-recall/internal/index"
+	"github.com/yxwyoyoyo/session-recall/internal/session"
 )
 
 type Picker struct {
@@ -88,10 +88,10 @@ func (p *Picker) search() {
 
 func (p *Picker) View() string {
 	if p.err != nil {
-		return fmt.Sprintf("session-try\n\n%s\n\nEsc cancel\n", p.err)
+		return fmt.Sprintf("session-recall\n\n%s\n\nEsc cancel\n", p.err)
 	}
 	var out strings.Builder
-	out.WriteString("session-try  ")
+	out.WriteString("session-recall  ")
 	out.WriteString(p.input.View())
 	out.WriteString("\n\n")
 	visible := max(1, p.height-6)

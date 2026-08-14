@@ -7,7 +7,7 @@ import (
 
 	"github.com/charmbracelet/bubbles/textinput"
 
-	"github.com/yxwyoyoyo/session-try/internal/session"
+	"github.com/yxwyoyoyo/session-recall/internal/session"
 )
 
 var renderedFrame string

@@ -17,13 +17,18 @@ import (
 	"golang.org/x/term"
 	_ "modernc.org/sqlite"
 
-	"github.com/yxwyoyoyo/session-try/internal/index"
-	"github.com/yxwyoyoyo/session-try/internal/provider"
-	"github.com/yxwyoyoyo/session-try/internal/session"
-	"github.com/yxwyoyoyo/session-try/internal/ui"
+	"github.com/yxwyoyoyo/session-recall/internal/index"
+	"github.com/yxwyoyoyo/session-recall/internal/provider"
+	"github.com/yxwyoyoyo/session-recall/internal/session"
+	"github.com/yxwyoyoyo/session-recall/internal/ui"
 )
 
 var version = "dev"
+
+const (
+	appName       = "session-recall"
+	legacyAppName = "session-try"
+)
 
 type options struct {
 	provider string
@@ -35,7 +40,7 @@ type options struct {
 
 func main() {
 	if err := run(os.Args[1:], os.Stdout, os.Stderr); err != nil {
-		fmt.Fprintln(os.Stderr, "session-try:", err)
+		fmt.Fprintln(os.Stderr, "session-recall:", err)
 		os.Exit(1)
 	}
 }
@@ -49,8 +54,8 @@ func run(args []string, stdout, stderr io.Writer) error {
 	if err != nil {
 		return err
 	}
-	indexPath := filepath.Join(cache, "session-try", "index.db")
-	if err := os.MkdirAll(filepath.Dir(indexPath), 0o700); err != nil {
+	indexPath, err := resolveIndexPath(cache)
+	if err != nil {
 		return err
 	}
 	db, err := sql.Open("sqlite", indexPath)
@@ -89,7 +94,7 @@ func run(args []string, stdout, stderr io.Writer) error {
 		}
 	}
 
-	flags := flag.NewFlagSet("session-try", flag.ContinueOnError)
+	flags := flag.NewFlagSet("session-recall", flag.ContinueOnError)
 	flags.SetOutput(stderr)
 	var opt options
 	flags.StringVar(&opt.provider, "provider", "", "only show one provider")
@@ -105,7 +110,7 @@ func run(args []string, stdout, stderr io.Writer) error {
 	defer stop()
 	if opt.refresh {
 		if err := refresh(ctx, store, providers, stderr); err != nil {
-			fmt.Fprintln(stderr, "session-try: refresh warning:", err)
+			fmt.Fprintln(stderr, "session-recall: refresh warning:", err)
 		}
 	}
 	filters := index.Filters{Provider: opt.provider, Limit: opt.limit}
@@ -132,6 +137,24 @@ func run(args []string, stdout, stderr io.Writer) error {
 		return err
 	}
 	return resume(providers, *chosen)
+}
+
+func resolveIndexPath(cache string) (string, error) {
+	indexDir := filepath.Join(cache, appName)
+	legacyDir := filepath.Join(cache, legacyAppName)
+	if _, err := os.Stat(indexDir); os.IsNotExist(err) {
+		if _, legacyErr := os.Stat(legacyDir); legacyErr == nil {
+			if renameErr := os.Rename(legacyDir, indexDir); renameErr != nil {
+				return "", fmt.Errorf("migrate legacy index: %w", renameErr)
+			}
+		}
+	} else if err != nil {
+		return "", err
+	}
+	if err := os.MkdirAll(indexDir, 0o700); err != nil {
+		return "", err
+	}
+	return filepath.Join(indexDir, "index.db"), nil
 }
 
 func refresh(ctx context.Context, store *index.Store, providers []provider.Provider, stderr io.Writer) error {
@@ -180,7 +203,7 @@ func resume(providers []provider.Provider, chosen session.Session) error {
 }
 
 func runIndex(args []string, store *index.Store, providers []provider.Provider, stdout, stderr io.Writer) error {
-	flags := flag.NewFlagSet("session-try index", flag.ContinueOnError)
+	flags := flag.NewFlagSet("session-recall index", flag.ContinueOnError)
 	flags.SetOutput(stderr)
 	rebuild := flags.Bool("rebuild", false, "discard and recreate all indexed data")
 	if err := flags.Parse(args); err != nil {
@@ -221,12 +244,12 @@ func runDoctor(store *index.Store, providers []provider.Provider, indexPath stri
 }
 
 func printHelp(out io.Writer) {
-	fmt.Fprintln(out, `session-try finds AI harness sessions by what you remember.
+	fmt.Fprintln(out, `session-recall finds AI harness sessions by what you remember.
 
 Usage:
-  session-try [options] [query]
-  session-try index [--rebuild]
-  session-try doctor
+  session-recall [options] [query]
+  session-recall index [--rebuild]
+  session-recall doctor
 
 Options:
   --provider NAME   limit to claude, codex, opencode, or kiro

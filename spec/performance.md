@@ -2,7 +2,7 @@
 
 ## Objective
 
-`session-try` should feel immediate during normal search even when its source
+`session-recall` should feel immediate during normal search even when its source
 harnesses contain gigabytes of transcript data. Provider storage is read only;
 all interactive queries operate on the compact derived SQLite FTS index.
 

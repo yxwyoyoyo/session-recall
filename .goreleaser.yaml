@@ -1,11 +1,11 @@
 version: 2
 
-project_name: session-try
+project_name: session-recall
 
 builds:
-  - id: session-try
-    main: ./cmd/session-try
-    binary: session-try
+  - id: session-recall
+    main: ./cmd/session-recall
+    binary: session-recall
     env:
       - CGO_ENABLED=0
     goos:

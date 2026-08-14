@@ -4,7 +4,7 @@ import (
 	"context"
 	"os/exec"
 
-	"github.com/yxwyoyoyo/session-try/internal/session"
+	"github.com/yxwyoyoyo/session-recall/internal/session"
 )
 
 // Provider discovers sessions owned by one AI harness and knows how to resume

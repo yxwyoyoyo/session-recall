@@ -8,8 +8,39 @@ import (
 	"runtime"
 	"testing"
 
-	"github.com/yxwyoyoyo/session-try/internal/session"
+	"github.com/yxwyoyoyo/session-recall/internal/session"
 )
+
+func TestResolveIndexPathMigratesLegacyDirectory(t *testing.T) {
+	cache := t.TempDir()
+	legacyDir := filepath.Join(cache, legacyAppName)
+	if err := os.MkdirAll(legacyDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	legacyIndex := filepath.Join(legacyDir, "index.db")
+	if err := os.WriteFile(legacyIndex, []byte("existing index"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	path, err := resolveIndexPath(cache)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := filepath.Join(cache, appName, "index.db")
+	if path != want {
+		t.Fatalf("path = %q, want %q", path, want)
+	}
+	contents, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(contents) != "existing index" {
+		t.Fatalf("migrated index = %q", contents)
+	}
+	if _, err := os.Stat(legacyDir); !os.IsNotExist(err) {
+		t.Fatalf("legacy directory still exists: %v", err)
+	}
+}
 
 func TestKiroDiscoveryToSearchPipeline(t *testing.T) {
 	home := t.TempDir()

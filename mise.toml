@@ -10,8 +10,8 @@ go test ./...
 """
 
 [tasks.build]
-description = "Build the session-try binary"
-run = "go build -o bin/session-try ./cmd/session-try"
+description = "Build the session-recall binary"
+run = "go build -o bin/session-recall ./cmd/session-recall"
 
 [tasks.release-snapshot]
 description = "Build release archives locally without publishing"
