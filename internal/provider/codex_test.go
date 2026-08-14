@@ -1,0 +1,31 @@
+package provider
+
+import (
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+)
+
+func TestParseCodexFileUsesMetadataTitleAndUserContent(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "session.jsonl")
+	data := strings.Join([]string{
+		`{"timestamp":"2026-01-01T10:00:00Z","type":"session_meta","payload":{"id":"uuid-1","cwd":"/repo","timestamp":"2026-01-01T10:00:00Z"}}`,
+		`{"timestamp":"2026-01-01T10:00:30Z","type":"response_item","payload":{"role":"user","content":[{"type":"input_text","text":"injected workspace instructions"}]}}`,
+		`{"timestamp":"2026-01-01T10:01:00Z","type":"event_msg","payload":{"type":"user_message","message":"find the missing session"}}`,
+		`{"timestamp":"2026-01-01T10:02:00Z","type":"response_item","payload":{"role":"assistant","content":[{"type":"output_text","text":"do not index this"}]}}`,
+	}, "\n")
+	if err := os.WriteFile(path, []byte(data), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	item, err := parseCodexFile(path, 7, map[string]codexTitle{"uuid-1": {ID: "uuid-1", ThreadName: "Readable title"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if item.ID != "uuid-1" || item.Directory != "/repo" || item.Title != "Readable title" {
+		t.Fatalf("unexpected session: %#v", item)
+	}
+	if item.Content != "find the missing session\n" {
+		t.Fatalf("unexpected content: %q", item.Content)
+	}
+}

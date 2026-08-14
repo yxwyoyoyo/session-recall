@@ -1,0 +1,38 @@
+[tools]
+go = "1.26.6"
+
+[tasks.check]
+description = "Format, vet, and test the project"
+run = """
+test -z "$(gofmt -l .)"
+go vet ./...
+go test ./...
+"""
+
+[tasks.build]
+description = "Build the session-try binary"
+run = "go build -o bin/session-try ./cmd/session-try"
+
+[tasks.bench]
+description = "Run repeatable microbenchmarks with allocation reporting"
+run = "go test -run '^$' -bench . -benchmem ./internal/..."
+
+[tasks.profile-search]
+description = "Capture CPU and memory profiles for indexed search"
+run = """
+mkdir -p .profiles
+go test -run '^$' -bench '^BenchmarkSearch1000$' -benchtime=3s \
+  -cpuprofile .profiles/search.cpu.pprof \
+  -memprofile .profiles/search.mem.pprof ./internal/index
+echo "Profiles written to .profiles/"
+"""
+
+[tasks.profile-picker]
+description = "Capture CPU and memory profiles for picker rendering"
+run = """
+mkdir -p .profiles
+go test -run '^$' -bench '^BenchmarkPickerView50$' -benchtime=3s \
+  -cpuprofile .profiles/picker.cpu.pprof \
+  -memprofile .profiles/picker.mem.pprof ./internal/ui
+echo "Profiles written to .profiles/"
+"""

@@ -1,0 +1,7 @@
+/bin/
+/dist/
+/.profiles/
+/*.test
+*.db
+*.db-shm
+*.db-wal
