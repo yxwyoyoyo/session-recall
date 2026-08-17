@@ -82,6 +82,32 @@ func TestKiroDiscoverToleratesJournalWithoutMetadata(t *testing.T) {
 	}
 }
 
+func TestKiroDiscoverRejectsUnsupportedPromptData(t *testing.T) {
+	home := t.TempDir()
+	dir := filepath.Join(home, "sessions", "cli")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	id := "changed"
+	if err := os.WriteFile(filepath.Join(dir, id+".json"), []byte(`{"session_id":"changed","cwd":"/repo"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	journal := `{"version":"v1","kind":"Prompt","data":{"content":[{"kind":"text","data":{"text":"new shape"}}]}}`
+	if err := os.WriteFile(filepath.Join(dir, id+".jsonl"), []byte(journal), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	discovery, err := (&Kiro{Home: home, Executable: "kiro-cli"}).Discover(context.Background(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(discovery.Sessions) != 0 || len(discovery.Failures) != 1 || discovery.SkippedRecords != 1 {
+		t.Fatalf("unsupported prompt data must not be applied: %#v", discovery)
+	}
+	if !strings.Contains(discovery.Failures[0].Err.Error(), "prompt record") {
+		t.Fatalf("unexpected failure: %v", discovery.Failures[0].Err)
+	}
+}
+
 func TestKiroResumeCommandUsesExplicitChatSubcommand(t *testing.T) {
 	p := &Kiro{Executable: "kiro-cli"}
 	cmd, err := p.ResumeCommand(sessionFixture("kiro", "abc-123", "/repo"))

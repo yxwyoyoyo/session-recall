@@ -141,9 +141,13 @@ func parsePiFile(path string, stamp int64) (session.Session, int, error) {
 	scanner := bufio.NewScanner(file)
 	scanner.Buffer(make([]byte, 64*1024), 32*1024*1024)
 	for scanner.Scan() {
+		if len(bytes.TrimSpace(scanner.Bytes())) == 0 {
+			continue
+		}
 		var entry piEntry
 		if json.Unmarshal(scanner.Bytes(), &entry) != nil {
 			skipped++
+			incompatible = true
 			continue
 		}
 		if updated, err := time.Parse(time.RFC3339Nano, entry.Timestamp); err == nil && updated.After(item.UpdatedAt) {
@@ -159,7 +163,12 @@ func parsePiFile(path string, stamp int64) (session.Session, int, error) {
 			}
 		case "message":
 			var message piMessage
-			if json.Unmarshal(entry.Message, &message) != nil || message.Role != "user" {
+			if json.Unmarshal(entry.Message, &message) != nil {
+				skipped++
+				incompatible = true
+				continue
+			}
+			if message.Role != "user" {
 				continue
 			}
 			text, recognized := piTextContent(message.Content)
@@ -188,7 +197,7 @@ func parsePiFile(path string, stamp int64) (session.Session, int, error) {
 		return session.Session{}, skipped, fmt.Errorf("no recognizable Pi session header")
 	}
 	if incompatible {
-		return session.Session{}, skipped, fmt.Errorf("unsupported Pi user-message content shape")
+		return session.Session{}, skipped, fmt.Errorf("unsupported or malformed Pi session record")
 	}
 	if item.Title == "" {
 		item.Title = "Pi session"

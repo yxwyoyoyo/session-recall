@@ -137,7 +137,7 @@ func TestPiDiscoverRejectsChangedUserContentShape(t *testing.T) {
 	if len(discovery.Sessions) != 0 || len(discovery.Failures) != 1 || discovery.SkippedRecords != 1 {
 		t.Fatalf("unexpected discovery: %#v", discovery)
 	}
-	if !strings.Contains(discovery.Failures[0].Err.Error(), "content shape") {
+	if !strings.Contains(discovery.Failures[0].Err.Error(), "session record") {
 		t.Fatalf("unexpected failure: %v", discovery.Failures[0].Err)
 	}
 }
@@ -158,7 +158,28 @@ func TestPiDiscoverRejectsUnknownArrayContentPart(t *testing.T) {
 	if len(discovery.Sessions) != 0 || len(discovery.Failures) != 1 || discovery.SkippedRecords != 1 {
 		t.Fatalf("unknown array part must not be applied: %#v", discovery)
 	}
-	if !strings.Contains(discovery.Failures[0].Err.Error(), "content shape") {
+	if !strings.Contains(discovery.Failures[0].Err.Error(), "session record") {
+		t.Fatalf("unexpected failure: %v", discovery.Failures[0].Err)
+	}
+}
+
+func TestPiDiscoverRejectsMalformedMessageEnvelope(t *testing.T) {
+	dir := t.TempDir()
+	journal := strings.Join([]string{
+		`{"type":"session","version":4,"id":"pi-new","timestamp":"2026-08-17T10:00:00Z","cwd":"/repo"}`,
+		`{"type":"message","timestamp":"2026-08-17T10:00:01Z","message":["new envelope"]}`,
+	}, "\n")
+	if err := os.WriteFile(filepath.Join(dir, "changed.jsonl"), []byte(journal), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	discovery, err := (&Pi{SessionDir: dir, Executable: "pi"}).Discover(context.Background(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(discovery.Sessions) != 0 || len(discovery.Failures) != 1 || discovery.SkippedRecords != 1 {
+		t.Fatalf("malformed message envelope must not be applied: %#v", discovery)
+	}
+	if !strings.Contains(discovery.Failures[0].Err.Error(), "session record") {
 		t.Fatalf("unexpected failure: %v", discovery.Failures[0].Err)
 	}
 }

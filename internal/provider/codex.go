@@ -2,6 +2,7 @@ package provider
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -109,6 +110,9 @@ func parseCodexFile(path string, stamp int64, titles map[string]codexTitle) (ses
 	scanner := bufio.NewScanner(file)
 	scanner.Buffer(make([]byte, 64*1024), 32*1024*1024)
 	for scanner.Scan() {
+		if len(bytes.TrimSpace(scanner.Bytes())) == 0 {
+			continue
+		}
 		var row struct {
 			Type      string         `json:"type"`
 			Timestamp time.Time      `json:"timestamp"`
@@ -116,6 +120,7 @@ func parseCodexFile(path string, stamp int64, titles map[string]codexTitle) (ses
 		}
 		if json.Unmarshal(scanner.Bytes(), &row) != nil {
 			skipped++
+			incompatible = true
 			continue
 		}
 		if row.Type == "session_meta" {
@@ -155,7 +160,7 @@ func parseCodexFile(path string, stamp int64, titles map[string]codexTitle) (ses
 		return session.Session{}, skipped, fmt.Errorf("no recognizable Codex session metadata")
 	}
 	if incompatible {
-		return session.Session{}, skipped, fmt.Errorf("unsupported Codex user-message content shape")
+		return session.Session{}, skipped, fmt.Errorf("unsupported or malformed Codex session record")
 	}
 	if title, ok := titles[item.ID]; ok {
 		if strings.TrimSpace(title.ThreadName) != "" {

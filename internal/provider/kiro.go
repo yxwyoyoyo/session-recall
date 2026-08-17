@@ -2,6 +2,7 @@ package provider
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -164,6 +165,7 @@ func kiroStamp(paths ...string) (int64, time.Time, error) {
 func parseKiroSession(metaPath, journalPath, fallbackID string) (session.Session, int, error) {
 	item := session.Session{ID: fallbackID}
 	skipped := 0
+	incompatible := false
 	if data, err := os.ReadFile(metaPath); err == nil {
 		var meta kiroMetadata
 		if err := json.Unmarshal(data, &meta); err != nil {
@@ -187,9 +189,13 @@ func parseKiroSession(metaPath, journalPath, fallbackID string) (session.Session
 		scanner := bufio.NewScanner(file)
 		scanner.Buffer(make([]byte, 64*1024), 32*1024*1024)
 		for scanner.Scan() {
+			if len(bytes.TrimSpace(scanner.Bytes())) == 0 {
+				continue
+			}
 			var envelope kiroEnvelope
 			if json.Unmarshal(scanner.Bytes(), &envelope) != nil {
 				skipped++
+				incompatible = true
 				continue
 			}
 			if envelope.Kind != "Prompt" {
@@ -197,10 +203,17 @@ func parseKiroSession(metaPath, journalPath, fallbackID string) (session.Session
 			}
 			for _, part := range envelope.Data.Content {
 				if part.Kind != "text" {
+					skipped++
+					incompatible = true
 					continue
 				}
 				var text string
-				if json.Unmarshal(part.Data, &text) != nil || strings.TrimSpace(text) == "" {
+				if json.Unmarshal(part.Data, &text) != nil {
+					skipped++
+					incompatible = true
+					continue
+				}
+				if strings.TrimSpace(text) == "" {
 					continue
 				}
 				item.Content += text + "\n"
@@ -214,6 +227,9 @@ func parseKiroSession(metaPath, journalPath, fallbackID string) (session.Session
 		}
 	} else if !os.IsNotExist(err) {
 		return session.Session{}, skipped, err
+	}
+	if incompatible {
+		return session.Session{}, skipped, fmt.Errorf("unsupported or malformed Kiro prompt record")
 	}
 	if item.Title == "" {
 		item.Title = "Kiro session"
