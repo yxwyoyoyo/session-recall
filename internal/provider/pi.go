@@ -2,6 +2,7 @@ package provider
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -196,6 +197,10 @@ func parsePiFile(path string, stamp int64) (session.Session, int, error) {
 }
 
 func piTextContent(raw json.RawMessage) (string, bool) {
+	value := bytes.TrimSpace(raw)
+	if len(value) == 0 || bytes.Equal(value, []byte("null")) {
+		return "", false
+	}
 	var text string
 	if json.Unmarshal(raw, &text) == nil {
 		return strings.TrimSpace(text), true
@@ -209,8 +214,15 @@ func piTextContent(raw json.RawMessage) (string, bool) {
 	}
 	texts := make([]string, 0, len(parts))
 	for _, part := range parts {
-		if part.Type == "text" && strings.TrimSpace(part.Text) != "" {
-			texts = append(texts, strings.TrimSpace(part.Text))
+		switch part.Type {
+		case "text":
+			if strings.TrimSpace(part.Text) != "" {
+				texts = append(texts, strings.TrimSpace(part.Text))
+			}
+		case "image":
+			// Image prompts are recognized but intentionally not indexed.
+		default:
+			return "", false
 		}
 	}
 	return strings.Join(texts, "\n"), true

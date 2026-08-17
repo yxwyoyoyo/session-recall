@@ -132,7 +132,7 @@ func parseCodexFile(path string, stamp int64, titles map[string]codexTitle) (ses
 		if row.Type == "event_msg" && payloadType == "user_message" {
 			message, exists := row.Payload["message"]
 			text, isString := message.(string)
-			if exists && !isString {
+			if !exists || !isString {
 				skipped++
 				incompatible = true
 				continue

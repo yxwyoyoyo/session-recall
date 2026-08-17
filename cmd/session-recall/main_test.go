@@ -17,11 +17,13 @@ import (
 	"github.com/yxwyoyoyo/session-recall/internal/session"
 )
 
-type doctorProvider struct{}
+type doctorProvider struct {
+	revision int
+}
 
-func (doctorProvider) Name() string        { return "test-provider" }
-func (doctorProvider) ParserRevision() int { return 3 }
-func (doctorProvider) Available() bool     { return true }
+func (doctorProvider) Name() string          { return "test-provider" }
+func (p doctorProvider) ParserRevision() int { return p.revision }
+func (doctorProvider) Available() bool       { return true }
 func (doctorProvider) Discover(context.Context, map[string]int64) (provider.Discovery, error) {
 	return provider.Discovery{}, nil
 }
@@ -179,7 +181,7 @@ func TestDoctorReportsDegradedProviderDiagnostics(t *testing.T) {
 		t.Fatal(err)
 	}
 	var output bytes.Buffer
-	if err := runDoctor(store, []provider.Provider{doctorProvider{}}, "/cache/index.db", &output); err != nil {
+	if err := runDoctor(store, []provider.Provider{doctorProvider{revision: 3}}, "/cache/index.db", &output); err != nil {
 		t.Fatal(err)
 	}
 	for _, want := range []string{
@@ -190,5 +192,28 @@ func TestDoctorReportsDegradedProviderDiagnostics(t *testing.T) {
 		if !strings.Contains(output.String(), want) {
 			t.Fatalf("doctor output missing %q:\n%s", want, output.String())
 		}
+	}
+}
+
+func TestDoctorReportsPendingParserRevision(t *testing.T) {
+	db, err := sql.Open("sqlite", ":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	store, err := index.Open(db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { store.Close() })
+	if err := store.ApplyRefresh(context.Background(), "test-provider", 2, nil, index.RefreshStats{Scanned: 4}); err != nil {
+		t.Fatal(err)
+	}
+	var output bytes.Buffer
+	if err := runDoctor(store, []provider.Provider{doctorProvider{revision: 3}}, "/cache/index.db", &output); err != nil {
+		t.Fatal(err)
+	}
+	want := "test-provider\tavailable\t0 indexed\tparser=v3\trefresh=pending\tprevious_parser=v2"
+	if !strings.Contains(output.String(), want) {
+		t.Fatalf("doctor output missing %q:\n%s", want, output.String())
 	}
 }

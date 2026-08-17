@@ -2,6 +2,7 @@ package provider
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -71,6 +72,9 @@ func (p *Claude) Discover(ctx context.Context, known map[string]int64) (Discover
 		if err := ctx.Err(); err != nil {
 			return report, err
 		}
+		if len(bytes.TrimSpace(scanner.Bytes())) == 0 {
+			continue
+		}
 		var row claudeHistory
 		if err := json.Unmarshal(scanner.Bytes(), &row); err != nil || row.SessionID == "" {
 			report.SkippedRecords++
@@ -98,6 +102,13 @@ func (p *Claude) Discover(ctx context.Context, known map[string]int64) (Discover
 	}
 	if err := scanner.Err(); err != nil {
 		report.Failures = append(report.Failures, SourceFailure{Source: path, Err: fmt.Errorf("read Claude history: %w", err)})
+		return report, nil
+	}
+	if report.SkippedRecords > 0 {
+		report.Failures = append(report.Failures, SourceFailure{
+			Source: path,
+			Err:    fmt.Errorf("%d unrecognized Claude history records", report.SkippedRecords),
+		})
 		return report, nil
 	}
 	if info.Size() > 0 && len(byID) == 0 {

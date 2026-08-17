@@ -271,9 +271,15 @@ func runDoctor(store *index.Store, providers []provider.Provider, indexPath stri
 			status = "available"
 		}
 		state, refreshed := states[p.Name()]
+		parserRevision := p.ParserRevision()
 		if !refreshed {
 			fmt.Fprintf(stdout, "%s\t%s\t%d indexed\tparser=v%d\trefresh=never\n",
-				p.Name(), status, counts[p.Name()], p.ParserRevision())
+				p.Name(), status, counts[p.Name()], parserRevision)
+			continue
+		}
+		if state.ParserRevision != parserRevision {
+			fmt.Fprintf(stdout, "%s\t%s\t%d indexed\tparser=v%d\trefresh=pending\tprevious_parser=v%d\n",
+				p.Name(), status, counts[p.Name()], parserRevision, state.ParserRevision)
 			continue
 		}
 		refreshStatus := "ok"
@@ -281,7 +287,7 @@ func runDoctor(store *index.Store, providers []provider.Provider, indexPath stri
 			refreshStatus = "degraded"
 		}
 		fmt.Fprintf(stdout, "%s\t%s\t%d indexed\tparser=v%d\trefresh=%s\tscanned=%d changed=%d unchanged=%d skipped=%d failed=%d\n",
-			p.Name(), status, counts[p.Name()], p.ParserRevision(), refreshStatus, state.Scanned,
+			p.Name(), status, counts[p.Name()], parserRevision, refreshStatus, state.Scanned,
 			state.Changed, state.Unchanged, state.SkippedRecords, state.FailedSources)
 		if state.LastError != "" {
 			fmt.Fprintf(stdout, "  warning\t%s\n", state.LastError)

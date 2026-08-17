@@ -17,7 +17,9 @@ read-only compatibility boundary.
 
 `session-recall doctor` shows the active parser revision and the most recent
 scan's source, skip, and failure counts. Its warning paths identify the local
-source that needs a new fixture without printing prompt content.
+source that needs a new fixture without printing prompt content. After an
+adapter revision changes, diagnostics show `refresh=pending` until that parser
+has completed a refresh.
 
 ## Changing an adapter
 
