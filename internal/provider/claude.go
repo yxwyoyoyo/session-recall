@@ -2,6 +2,7 @@ package provider
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -26,6 +27,8 @@ func NewClaude(home string) *Claude {
 
 func (p *Claude) Name() string { return "claude" }
 
+func (p *Claude) ParserRevision() int { return 1 }
+
 func (p *Claude) historyPath() string {
 	return filepath.Join(p.Home, ".claude", "history.jsonl")
 }
@@ -43,20 +46,22 @@ type claudeHistory struct {
 	Timestamp int64  `json:"timestamp"`
 }
 
-func (p *Claude) Discover(ctx context.Context, known map[string]int64) ([]session.Session, error) {
+func (p *Claude) Discover(ctx context.Context, known map[string]int64) (Discovery, error) {
+	report := Discovery{Scanned: 1}
 	path := p.historyPath()
 	info, err := os.Stat(path)
 	if err != nil {
-		return nil, err
+		return report, err
 	}
 	stamp := info.ModTime().UnixNano() ^ info.Size()
 	if known[path] == stamp {
-		return nil, nil
+		report.Unchanged = 1
+		return report, nil
 	}
 
 	file, err := os.Open(path)
 	if err != nil {
-		return nil, err
+		return report, err
 	}
 	defer file.Close()
 
@@ -65,10 +70,14 @@ func (p *Claude) Discover(ctx context.Context, known map[string]int64) ([]sessio
 	scanner.Buffer(make([]byte, 64*1024), 16*1024*1024)
 	for scanner.Scan() {
 		if err := ctx.Err(); err != nil {
-			return nil, err
+			return report, err
+		}
+		if len(bytes.TrimSpace(scanner.Bytes())) == 0 {
+			continue
 		}
 		var row claudeHistory
 		if err := json.Unmarshal(scanner.Bytes(), &row); err != nil || row.SessionID == "" {
+			report.SkippedRecords++
 			continue
 		}
 		current := byID[row.SessionID]
@@ -92,7 +101,19 @@ func (p *Claude) Discover(ctx context.Context, known map[string]int64) ([]sessio
 		}
 	}
 	if err := scanner.Err(); err != nil {
-		return nil, fmt.Errorf("read Claude history: %w", err)
+		report.Failures = append(report.Failures, SourceFailure{Source: path, Err: fmt.Errorf("read Claude history: %w", err)})
+		return report, nil
+	}
+	if report.SkippedRecords > 0 {
+		report.Failures = append(report.Failures, SourceFailure{
+			Source: path,
+			Err:    fmt.Errorf("%d unrecognized Claude history records", report.SkippedRecords),
+		})
+		return report, nil
+	}
+	if info.Size() > 0 && len(byID) == 0 {
+		report.Failures = append(report.Failures, SourceFailure{Source: path, Err: fmt.Errorf("no recognizable Claude session records")})
+		return report, nil
 	}
 
 	result := make([]session.Session, 0, len(byID))
@@ -103,7 +124,8 @@ func (p *Claude) Discover(ctx context.Context, known map[string]int64) ([]sessio
 		result = append(result, *item)
 	}
 	sort.Slice(result, func(i, j int) bool { return result[i].UpdatedAt.After(result[j].UpdatedAt) })
-	return result, nil
+	report.Sessions = result
+	return report, nil
 }
 
 func (p *Claude) ResumeCommand(s session.Session) (*exec.Cmd, error) {

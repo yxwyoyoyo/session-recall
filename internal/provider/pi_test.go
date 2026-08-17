@@ -28,10 +28,11 @@ func TestPiDiscoverReadsNamedSessionAndUserText(t *testing.T) {
 	}
 
 	p := &Pi{SessionDir: filepath.Dir(dir), Executable: "pi"}
-	items, err := p.Discover(context.Background(), nil)
+	discovery, err := p.Discover(context.Background(), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
+	items := discovery.Sessions
 	if len(items) != 1 {
 		t.Fatalf("got %d sessions", len(items))
 	}
@@ -44,7 +45,7 @@ func TestPiDiscoverReadsNamedSessionAndUserText(t *testing.T) {
 	}
 	known := map[string]int64{item.Source: item.Stamp}
 	unchanged, err := p.Discover(context.Background(), known)
-	if err != nil || len(unchanged) != 0 {
+	if err != nil || len(unchanged.Sessions) != 0 || unchanged.Unchanged != 1 {
 		t.Fatalf("expected unchanged source to be skipped: %#v, %v", unchanged, err)
 	}
 }
@@ -97,5 +98,124 @@ func TestPiIsAvailableBeforeFirstSession(t *testing.T) {
 	p := &Pi{Executable: executable, SessionDir: filepath.Join(t.TempDir(), "missing")}
 	if !p.Available() {
 		t.Fatal("installed Pi should be available before its first session")
+	}
+}
+
+func TestPiDiscoverReportsUnknownSchemaWithoutReplacement(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "changed.jsonl")
+	if err := os.WriteFile(path, []byte(`{"type":"new_session_shape","uuid":"pi-new"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	p := &Pi{SessionDir: dir, Executable: "pi"}
+	discovery, err := p.Discover(context.Background(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(discovery.Sessions) != 0 || len(discovery.Failures) != 1 {
+		t.Fatalf("unexpected discovery: %#v", discovery)
+	}
+	if discovery.Failures[0].Source != path || !strings.Contains(discovery.Failures[0].Err.Error(), "session header") {
+		t.Fatalf("unexpected failure: %#v", discovery.Failures[0])
+	}
+}
+
+func TestPiDiscoverRejectsChangedUserContentShape(t *testing.T) {
+	dir := t.TempDir()
+	journal := strings.Join([]string{
+		`{"type":"session","version":4,"id":"pi-new","timestamp":"2026-08-17T10:00:00Z","cwd":"/repo"}`,
+		`{"type":"message","timestamp":"2026-08-17T10:00:01Z","message":{"role":"user","content":{"text":"new object shape"}}}`,
+	}, "\n")
+	if err := os.WriteFile(filepath.Join(dir, "changed.jsonl"), []byte(journal), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	p := &Pi{SessionDir: dir, Executable: "pi"}
+	discovery, err := p.Discover(context.Background(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(discovery.Sessions) != 0 || len(discovery.Failures) != 1 || discovery.SkippedRecords != 1 {
+		t.Fatalf("unexpected discovery: %#v", discovery)
+	}
+	if !strings.Contains(discovery.Failures[0].Err.Error(), "session record") {
+		t.Fatalf("unexpected failure: %v", discovery.Failures[0].Err)
+	}
+}
+
+func TestPiDiscoverRejectsUnknownArrayContentPart(t *testing.T) {
+	dir := t.TempDir()
+	journal := strings.Join([]string{
+		`{"type":"session","version":4,"id":"pi-new","timestamp":"2026-08-17T10:00:00Z","cwd":"/repo"}`,
+		`{"type":"message","timestamp":"2026-08-17T10:00:01Z","message":{"role":"user","content":[{"type":"input_text","text":"renamed part"}]}}`,
+	}, "\n")
+	if err := os.WriteFile(filepath.Join(dir, "changed.jsonl"), []byte(journal), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	discovery, err := (&Pi{SessionDir: dir, Executable: "pi"}).Discover(context.Background(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(discovery.Sessions) != 0 || len(discovery.Failures) != 1 || discovery.SkippedRecords != 1 {
+		t.Fatalf("unknown array part must not be applied: %#v", discovery)
+	}
+	if !strings.Contains(discovery.Failures[0].Err.Error(), "session record") {
+		t.Fatalf("unexpected failure: %v", discovery.Failures[0].Err)
+	}
+}
+
+func TestPiDiscoverRejectsMalformedMessageEnvelope(t *testing.T) {
+	dir := t.TempDir()
+	journal := strings.Join([]string{
+		`{"type":"session","version":4,"id":"pi-new","timestamp":"2026-08-17T10:00:00Z","cwd":"/repo"}`,
+		`{"type":"message","timestamp":"2026-08-17T10:00:01Z","message":["new envelope"]}`,
+	}, "\n")
+	if err := os.WriteFile(filepath.Join(dir, "changed.jsonl"), []byte(journal), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	discovery, err := (&Pi{SessionDir: dir, Executable: "pi"}).Discover(context.Background(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(discovery.Sessions) != 0 || len(discovery.Failures) != 1 || discovery.SkippedRecords != 1 {
+		t.Fatalf("malformed message envelope must not be applied: %#v", discovery)
+	}
+	if !strings.Contains(discovery.Failures[0].Err.Error(), "session record") {
+		t.Fatalf("unexpected failure: %v", discovery.Failures[0].Err)
+	}
+}
+
+func TestPiDiscoverRejectsNullMessageEnvelope(t *testing.T) {
+	dir := t.TempDir()
+	journal := strings.Join([]string{
+		`{"type":"session","version":4,"id":"pi-new","timestamp":"2026-08-17T10:00:00Z","cwd":"/repo"}`,
+		`{"type":"message","timestamp":"2026-08-17T10:00:01Z","message":null}`,
+	}, "\n")
+	if err := os.WriteFile(filepath.Join(dir, "changed.jsonl"), []byte(journal), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	discovery, err := (&Pi{SessionDir: dir, Executable: "pi"}).Discover(context.Background(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(discovery.Sessions) != 0 || len(discovery.Failures) != 1 || discovery.SkippedRecords != 1 {
+		t.Fatalf("null message envelope must not be applied: %#v", discovery)
+	}
+}
+
+func TestPiDiscoverRejectsSessionWithoutWorkingDirectory(t *testing.T) {
+	dir := t.TempDir()
+	journal := strings.Join([]string{
+		`{"type":"session","version":4,"id":"pi-new","timestamp":"2026-08-17T10:00:00Z"}`,
+		`{"type":"message","timestamp":"2026-08-17T10:00:01Z","message":{"role":"user","content":"new prompt"}}`,
+	}, "\n")
+	if err := os.WriteFile(filepath.Join(dir, "changed.jsonl"), []byte(journal), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	discovery, err := (&Pi{SessionDir: dir, Executable: "pi"}).Discover(context.Background(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(discovery.Sessions) != 0 || len(discovery.Failures) != 1 || !strings.Contains(discovery.Failures[0].Err.Error(), "working directory") {
+		t.Fatalf("incomplete session header must not be applied: %#v", discovery)
 	}
 }

@@ -22,6 +22,21 @@ type Filters struct {
 	Limit    int
 }
 
+type RefreshStats struct {
+	Scanned        int
+	Changed        int
+	Unchanged      int
+	SkippedRecords int
+	FailedSources  int
+	LastError      string
+}
+
+type ProviderState struct {
+	ParserRevision int
+	LastRefreshAt  time.Time
+	RefreshStats
+}
+
 func Open(db *sql.DB) (*Store, error) {
 	store := &Store{db: db}
 	if err := store.createSchema(); err != nil {
@@ -44,6 +59,7 @@ func (s *Store) createSchema() error {
 			updated_at INTEGER NOT NULL,
 			source TEXT NOT NULL,
 			stamp INTEGER NOT NULL,
+			parser_revision INTEGER NOT NULL DEFAULT 0,
 			PRIMARY KEY (provider, id)
 		);
 		CREATE INDEX IF NOT EXISTS sessions_updated_idx ON sessions(updated_at DESC);
@@ -55,17 +71,60 @@ func (s *Store) createSchema() error {
 			directory,
 			content,
 			tokenize='unicode61'
+		);
+		CREATE TABLE IF NOT EXISTS provider_state (
+			provider TEXT PRIMARY KEY,
+			parser_revision INTEGER NOT NULL,
+			last_refresh_at INTEGER NOT NULL,
+			scanned INTEGER NOT NULL,
+			changed INTEGER NOT NULL,
+			unchanged INTEGER NOT NULL,
+			skipped_records INTEGER NOT NULL,
+			failed_sources INTEGER NOT NULL,
+			last_error TEXT NOT NULL
 		);`)
+	if err != nil {
+		return err
+	}
+	return s.ensureParserRevisionColumn()
+}
+
+func (s *Store) ensureParserRevisionColumn() error {
+	rows, err := s.db.Query(`PRAGMA table_info(sessions)`)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	found := false
+	for rows.Next() {
+		var cid int
+		var name, columnType string
+		var notNull, primaryKey int
+		var defaultValue any
+		if err := rows.Scan(&cid, &name, &columnType, &notNull, &defaultValue, &primaryKey); err != nil {
+			return err
+		}
+		if name == "parser_revision" {
+			found = true
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	if found {
+		return nil
+	}
+	_, err = s.db.Exec(`ALTER TABLE sessions ADD COLUMN parser_revision INTEGER NOT NULL DEFAULT 0`)
 	return err
 }
 
 func (s *Store) Rebuild() error {
-	_, err := s.db.Exec(`DELETE FROM session_fts; DELETE FROM sessions; VACUUM;`)
+	_, err := s.db.Exec(`DELETE FROM session_fts; DELETE FROM sessions; DELETE FROM provider_state; VACUUM;`)
 	return err
 }
 
-func (s *Store) Known(provider string) (map[string]int64, error) {
-	rows, err := s.db.Query(`SELECT source, MAX(stamp) FROM sessions WHERE provider = ? GROUP BY source`, provider)
+func (s *Store) Known(provider string, parserRevision int) (map[string]int64, error) {
+	rows, err := s.db.Query(`SELECT source, MAX(stamp) FROM sessions WHERE provider = ? AND parser_revision = ? GROUP BY source`, provider, parserRevision)
 	if err != nil {
 		return nil, err
 	}
@@ -99,8 +158,8 @@ func (s *Store) Upsert(ctx context.Context, sessions []session.Session) error {
 			item.UpdatedAt = time.Now()
 		}
 		_, err = tx.ExecContext(ctx, `
-			INSERT INTO sessions(provider, id, title, directory, updated_at, source, stamp)
-			VALUES(?, ?, ?, ?, ?, ?, ?)
+			INSERT INTO sessions(provider, id, title, directory, updated_at, source, stamp, parser_revision)
+			VALUES(?, ?, ?, ?, ?, ?, ?, 0)
 			ON CONFLICT(provider, id) DO UPDATE SET
 				title=excluded.title, directory=excluded.directory,
 				updated_at=excluded.updated_at, source=excluded.source, stamp=excluded.stamp`,
@@ -117,6 +176,105 @@ func (s *Store) Upsert(ctx context.Context, sessions []session.Session) error {
 		}
 	}
 	return tx.Commit()
+}
+
+// ApplyRefresh replaces only sources that decoded successfully. Sources that
+// failed parsing are absent from sessions and therefore keep their last-good
+// indexed rows.
+func (s *Store) ApplyRefresh(ctx context.Context, provider string, parserRevision int, sessions []session.Session, stats RefreshStats) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	bySource := map[string][]session.Session{}
+	for _, item := range sessions {
+		if item.Provider != provider || item.ID == "" || item.Source == "" {
+			continue
+		}
+		bySource[item.Source] = append(bySource[item.Source], item)
+	}
+	for source, items := range bySource {
+		rows, err := tx.QueryContext(ctx, `SELECT id FROM sessions WHERE provider = ? AND source = ?`, provider, source)
+		if err != nil {
+			return err
+		}
+		var ids []string
+		for rows.Next() {
+			var id string
+			if err := rows.Scan(&id); err != nil {
+				rows.Close()
+				return err
+			}
+			ids = append(ids, id)
+		}
+		if err := rows.Close(); err != nil {
+			return err
+		}
+		for _, id := range ids {
+			if _, err := tx.ExecContext(ctx, `DELETE FROM session_fts WHERE provider = ? AND session_id = ?`, provider, id); err != nil {
+				return err
+			}
+		}
+		if _, err := tx.ExecContext(ctx, `DELETE FROM sessions WHERE provider = ? AND source = ?`, provider, source); err != nil {
+			return err
+		}
+		for _, item := range items {
+			if item.UpdatedAt.IsZero() {
+				item.UpdatedAt = time.Now()
+			}
+			if _, err := tx.ExecContext(ctx, `DELETE FROM session_fts WHERE provider = ? AND session_id = ?`, provider, item.ID); err != nil {
+				return err
+			}
+			if _, err := tx.ExecContext(ctx, `DELETE FROM sessions WHERE provider = ? AND id = ?`, provider, item.ID); err != nil {
+				return err
+			}
+			if _, err := tx.ExecContext(ctx, `
+				INSERT INTO sessions(provider, id, title, directory, updated_at, source, stamp, parser_revision)
+				VALUES(?, ?, ?, ?, ?, ?, ?, ?)`, item.Provider, item.ID, item.Title, item.Directory,
+				item.UpdatedAt.UnixMilli(), item.Source, item.Stamp, parserRevision); err != nil {
+				return err
+			}
+			if _, err := tx.ExecContext(ctx, `INSERT INTO session_fts(provider, session_id, title, directory, content) VALUES(?, ?, ?, ?, ?)`,
+				item.Provider, item.ID, item.Title, item.Directory, item.Content); err != nil {
+				return err
+			}
+		}
+	}
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO provider_state(provider, parser_revision, last_refresh_at, scanned, changed, unchanged, skipped_records, failed_sources, last_error)
+		VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(provider) DO UPDATE SET
+			parser_revision=excluded.parser_revision, last_refresh_at=excluded.last_refresh_at,
+			scanned=excluded.scanned, changed=excluded.changed, unchanged=excluded.unchanged,
+			skipped_records=excluded.skipped_records, failed_sources=excluded.failed_sources,
+			last_error=excluded.last_error`, provider, parserRevision, time.Now().UnixMilli(), stats.Scanned,
+		stats.Changed, stats.Unchanged, stats.SkippedRecords, stats.FailedSources, stats.LastError); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+func (s *Store) ProviderStates() (map[string]ProviderState, error) {
+	rows, err := s.db.Query(`SELECT provider, parser_revision, last_refresh_at, scanned, changed, unchanged, skipped_records, failed_sources, last_error FROM provider_state`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	result := map[string]ProviderState{}
+	for rows.Next() {
+		var name string
+		var refreshed int64
+		var state ProviderState
+		if err := rows.Scan(&name, &state.ParserRevision, &refreshed, &state.Scanned, &state.Changed, &state.Unchanged,
+			&state.SkippedRecords, &state.FailedSources, &state.LastError); err != nil {
+			return nil, err
+		}
+		state.LastRefreshAt = time.UnixMilli(refreshed)
+		result[name] = state
+	}
+	return result, rows.Err()
 }
 
 var searchToken = regexp.MustCompile(`[\p{L}\p{N}_-]+`)

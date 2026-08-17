@@ -2,6 +2,7 @@ package provider
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -25,6 +26,8 @@ func NewCodex(home string) *Codex {
 }
 
 func (p *Codex) Name() string { return "codex" }
+
+func (p *Codex) ParserRevision() int { return 1 }
 
 func (p *Codex) root() string { return filepath.Join(p.Home, ".codex") }
 
@@ -57,9 +60,9 @@ func (p *Codex) titles() map[string]codexTitle {
 	return result
 }
 
-func (p *Codex) Discover(ctx context.Context, known map[string]int64) ([]session.Session, error) {
+func (p *Codex) Discover(ctx context.Context, known map[string]int64) (Discovery, error) {
 	titles := p.titles()
-	var result []session.Session
+	report := Discovery{}
 	err := filepath.WalkDir(filepath.Join(p.root(), "sessions"), func(path string, entry fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
@@ -70,43 +73,54 @@ func (p *Codex) Discover(ctx context.Context, known map[string]int64) ([]session
 		if entry.IsDir() || filepath.Ext(path) != ".jsonl" {
 			return nil
 		}
+		report.Scanned++
 		info, err := entry.Info()
 		if err != nil {
 			return err
 		}
 		stamp := info.ModTime().UnixNano() ^ info.Size()
 		if known[path] == stamp {
+			report.Unchanged++
 			return nil
 		}
-		item, err := parseCodexFile(path, stamp, titles)
+		item, skipped, err := parseCodexFile(path, stamp, titles)
+		report.SkippedRecords += skipped
 		if err != nil {
-			return fmt.Errorf("%s: %w", path, err)
+			report.Failures = append(report.Failures, SourceFailure{Source: path, Err: err})
+			return nil
 		}
 		if item.ID != "" {
-			result = append(result, item)
+			report.Sessions = append(report.Sessions, item)
 		}
 		return nil
 	})
-	return result, err
+	return report, err
 }
 
-func parseCodexFile(path string, stamp int64, titles map[string]codexTitle) (session.Session, error) {
+func parseCodexFile(path string, stamp int64, titles map[string]codexTitle) (session.Session, int, error) {
 	file, err := os.Open(path)
 	if err != nil {
-		return session.Session{}, err
+		return session.Session{}, 0, err
 	}
 	defer file.Close()
 
 	item := session.Session{Provider: "codex", Source: path, Stamp: stamp}
+	skipped := 0
+	incompatible := false
 	scanner := bufio.NewScanner(file)
 	scanner.Buffer(make([]byte, 64*1024), 32*1024*1024)
 	for scanner.Scan() {
+		if len(bytes.TrimSpace(scanner.Bytes())) == 0 {
+			continue
+		}
 		var row struct {
 			Type      string         `json:"type"`
 			Timestamp time.Time      `json:"timestamp"`
 			Payload   map[string]any `json:"payload"`
 		}
 		if json.Unmarshal(scanner.Bytes(), &row) != nil {
+			skipped++
+			incompatible = true
 			continue
 		}
 		if row.Type == "session_meta" {
@@ -120,8 +134,20 @@ func parseCodexFile(path string, stamp int64, titles map[string]codexTitle) (ses
 			}
 		}
 		payloadType, _ := row.Payload["type"].(string)
+		if row.Type == "event_msg" && payloadType == "" {
+			skipped++
+			incompatible = true
+			continue
+		}
 		if row.Type == "event_msg" && payloadType == "user_message" {
-			if text, _ := row.Payload["message"].(string); strings.TrimSpace(text) != "" {
+			message, exists := row.Payload["message"]
+			text, isString := message.(string)
+			if !exists || !isString {
+				skipped++
+				incompatible = true
+				continue
+			}
+			if strings.TrimSpace(text) != "" {
 				item.Content += text + "\n"
 				if item.Title == "" {
 					item.Title = oneLine(text, 100)
@@ -133,7 +159,16 @@ func parseCodexFile(path string, stamp int64, titles map[string]codexTitle) (ses
 		}
 	}
 	if err := scanner.Err(); err != nil {
-		return session.Session{}, err
+		return session.Session{}, skipped, err
+	}
+	if item.ID == "" {
+		return session.Session{}, skipped, fmt.Errorf("no recognizable Codex session metadata")
+	}
+	if item.Directory == "" {
+		return session.Session{}, skipped, fmt.Errorf("Codex session metadata has no working directory")
+	}
+	if incompatible {
+		return session.Session{}, skipped, fmt.Errorf("unsupported or malformed Codex session record")
 	}
 	if title, ok := titles[item.ID]; ok {
 		if strings.TrimSpace(title.ThreadName) != "" {
@@ -146,7 +181,7 @@ func parseCodexFile(path string, stamp int64, titles map[string]codexTitle) (ses
 	if item.Title == "" {
 		item.Title = "Codex session"
 	}
-	return item, nil
+	return item, skipped, nil
 }
 
 func (p *Codex) ResumeCommand(s session.Session) (*exec.Cmd, error) {

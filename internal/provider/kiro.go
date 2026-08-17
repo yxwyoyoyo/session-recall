@@ -2,6 +2,7 @@ package provider
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -33,6 +34,8 @@ func NewKiro(userHome string) *Kiro {
 
 func (p *Kiro) Name() string { return "kiro" }
 
+func (p *Kiro) ParserRevision() int { return 1 }
+
 func (p *Kiro) sessionsDir() string {
 	return filepath.Join(p.Home, "sessions", "cli")
 }
@@ -61,10 +64,11 @@ type kiroEnvelope struct {
 	} `json:"data"`
 }
 
-func (p *Kiro) Discover(ctx context.Context, known map[string]int64) ([]session.Session, error) {
+func (p *Kiro) Discover(ctx context.Context, known map[string]int64) (Discovery, error) {
+	report := Discovery{}
 	anchors, err := kiroAnchors(p.sessionsDir())
 	if err != nil {
-		return nil, err
+		return report, err
 	}
 	ids := make([]string, 0, len(anchors))
 	for id := range anchors {
@@ -72,24 +76,28 @@ func (p *Kiro) Discover(ctx context.Context, known map[string]int64) ([]session.
 	}
 	sort.Strings(ids)
 
-	result := make([]session.Session, 0, len(ids))
 	for _, id := range ids {
+		report.Scanned++
 		if err := ctx.Err(); err != nil {
-			return nil, err
+			return report, err
 		}
 		anchor := anchors[id]
 		metaPath := filepath.Join(p.sessionsDir(), id+".json")
 		journalPath := filepath.Join(p.sessionsDir(), id+".jsonl")
 		stamp, fallbackTime, err := kiroStamp(metaPath, journalPath)
 		if err != nil {
-			return nil, fmt.Errorf("inspect Kiro session %s: %w", id, err)
-		}
-		if known[anchor] == stamp {
+			report.Failures = append(report.Failures, SourceFailure{Source: anchor, Err: fmt.Errorf("inspect Kiro session %s: %w", id, err)})
 			continue
 		}
-		item, err := parseKiroSession(metaPath, journalPath, id)
+		if known[anchor] == stamp {
+			report.Unchanged++
+			continue
+		}
+		item, skipped, err := parseKiroSession(metaPath, journalPath, id)
+		report.SkippedRecords += skipped
 		if err != nil {
-			return nil, fmt.Errorf("parse Kiro session %s: %w", id, err)
+			report.Failures = append(report.Failures, SourceFailure{Source: anchor, Err: fmt.Errorf("parse Kiro session %s: %w", id, err)})
+			continue
 		}
 		item.Provider = p.Name()
 		item.Source = anchor
@@ -97,9 +105,9 @@ func (p *Kiro) Discover(ctx context.Context, known map[string]int64) ([]session.
 		if item.UpdatedAt.IsZero() {
 			item.UpdatedAt = fallbackTime
 		}
-		result = append(result, item)
+		report.Sessions = append(report.Sessions, item)
 	}
-	return result, nil
+	return report, nil
 }
 
 func kiroAnchors(dir string) (map[string]string, error) {
@@ -154,15 +162,20 @@ func kiroStamp(paths ...string) (int64, time.Time, error) {
 	return stamp, latest, nil
 }
 
-func parseKiroSession(metaPath, journalPath, fallbackID string) (session.Session, error) {
+func parseKiroSession(metaPath, journalPath, fallbackID string) (session.Session, int, error) {
 	item := session.Session{ID: fallbackID}
+	skipped := 0
+	incompatible := false
 	if data, err := os.ReadFile(metaPath); err == nil {
 		var meta kiroMetadata
 		if err := json.Unmarshal(data, &meta); err != nil {
-			return session.Session{}, fmt.Errorf("decode metadata: %w", err)
+			return session.Session{}, skipped, fmt.Errorf("decode metadata: %w", err)
 		}
 		if meta.SessionID != "" {
 			item.ID = meta.SessionID
+		}
+		if meta.SessionID == "" || meta.CWD == "" {
+			return session.Session{}, skipped, fmt.Errorf("metadata has no session identity or working directory")
 		}
 		item.Directory = meta.CWD
 		item.Title = strings.TrimSpace(meta.Title)
@@ -170,7 +183,7 @@ func parseKiroSession(metaPath, journalPath, fallbackID string) (session.Session
 			item.UpdatedAt, _ = time.Parse(time.RFC3339Nano, meta.UpdatedAt)
 		}
 	} else if !os.IsNotExist(err) {
-		return session.Session{}, err
+		return session.Session{}, skipped, err
 	}
 
 	file, err := os.Open(journalPath)
@@ -179,16 +192,36 @@ func parseKiroSession(metaPath, journalPath, fallbackID string) (session.Session
 		scanner := bufio.NewScanner(file)
 		scanner.Buffer(make([]byte, 64*1024), 32*1024*1024)
 		for scanner.Scan() {
+			if len(bytes.TrimSpace(scanner.Bytes())) == 0 {
+				continue
+			}
 			var envelope kiroEnvelope
-			if json.Unmarshal(scanner.Bytes(), &envelope) != nil || envelope.Kind != "Prompt" {
+			if json.Unmarshal(scanner.Bytes(), &envelope) != nil {
+				skipped++
+				incompatible = true
+				continue
+			}
+			if envelope.Kind != "Prompt" {
+				continue
+			}
+			if len(envelope.Data.Content) == 0 {
+				skipped++
+				incompatible = true
 				continue
 			}
 			for _, part := range envelope.Data.Content {
 				if part.Kind != "text" {
+					skipped++
+					incompatible = true
 					continue
 				}
 				var text string
-				if json.Unmarshal(part.Data, &text) != nil || strings.TrimSpace(text) == "" {
+				if json.Unmarshal(part.Data, &text) != nil {
+					skipped++
+					incompatible = true
+					continue
+				}
+				if strings.TrimSpace(text) == "" {
 					continue
 				}
 				item.Content += text + "\n"
@@ -198,15 +231,18 @@ func parseKiroSession(metaPath, journalPath, fallbackID string) (session.Session
 			}
 		}
 		if err := scanner.Err(); err != nil {
-			return session.Session{}, fmt.Errorf("read journal: %w", err)
+			return session.Session{}, skipped, fmt.Errorf("read journal: %w", err)
 		}
 	} else if !os.IsNotExist(err) {
-		return session.Session{}, err
+		return session.Session{}, skipped, err
+	}
+	if incompatible {
+		return session.Session{}, skipped, fmt.Errorf("unsupported or malformed Kiro prompt record")
 	}
 	if item.Title == "" {
 		item.Title = "Kiro session"
 	}
-	return item, nil
+	return item, skipped, nil
 }
 
 func (p *Kiro) ResumeCommand(s session.Session) (*exec.Cmd, error) {

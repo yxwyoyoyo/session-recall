@@ -27,11 +27,11 @@ func TestOpenCodeDiscoverReadsOnlyUserText(t *testing.T) {
 		t.Fatal(err)
 	}
 	p := NewOpenCode(t.TempDir(), func(string) (*sql.DB, error) { return db, nil })
-	items, err := p.Discover(context.Background(), nil)
+	discovery, err := p.Discover(context.Background(), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(items) != 1 || items[0].Content != "remember this phrase" {
-		t.Fatalf("unexpected sessions: %#v", items)
+	if len(discovery.Sessions) != 1 || discovery.Sessions[0].Content != "remember this phrase" {
+		t.Fatalf("unexpected sessions: %#v", discovery.Sessions)
 	}
 }

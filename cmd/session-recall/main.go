@@ -168,25 +168,48 @@ func refresh(ctx context.Context, store *index.Store, providers []provider.Provi
 		if !p.Available() {
 			continue
 		}
-		known, err := store.Known(p.Name())
+		known, err := store.Known(p.Name(), p.ParserRevision())
 		if err != nil {
 			failures = append(failures, fmt.Errorf("%s index: %w", p.Name(), err))
 			continue
 		}
-		sessions, err := p.Discover(ctx, known)
+		discovery, err := p.Discover(ctx, known)
 		if err != nil {
+			_ = store.ApplyRefresh(ctx, p.Name(), p.ParserRevision(), nil, index.RefreshStats{LastError: err.Error()})
 			failures = append(failures, fmt.Errorf("%s: %w", p.Name(), err))
 			continue
 		}
-		if err := store.Upsert(ctx, sessions); err != nil {
+		failed := make([]string, 0, len(discovery.Failures))
+		for _, failure := range discovery.Failures {
+			failed = append(failed, failure.Error())
+		}
+		stats := index.RefreshStats{
+			Scanned: discovery.Scanned, Changed: changedSourceCount(discovery.Sessions),
+			Unchanged: discovery.Unchanged, SkippedRecords: discovery.SkippedRecords,
+			FailedSources: len(discovery.Failures), LastError: strings.Join(failed, "; "),
+		}
+		if err := store.ApplyRefresh(ctx, p.Name(), p.ParserRevision(), discovery.Sessions, stats); err != nil {
 			failures = append(failures, fmt.Errorf("%s save: %w", p.Name(), err))
 			continue
 		}
-		if len(sessions) > 0 {
-			fmt.Fprintf(stderr, "Indexed %d changed %s sessions\n", len(sessions), p.Name())
+		if len(discovery.Sessions) > 0 {
+			fmt.Fprintf(stderr, "Indexed %d changed %s sessions\n", len(discovery.Sessions), p.Name())
+		}
+		for _, failure := range discovery.Failures {
+			failures = append(failures, fmt.Errorf("%s: %w", p.Name(), failure))
 		}
 	}
 	return errors.Join(failures...)
+}
+
+func changedSourceCount(sessions []session.Session) int {
+	sources := map[string]struct{}{}
+	for _, item := range sessions {
+		if item.Source != "" {
+			sources[item.Source] = struct{}{}
+		}
+	}
+	return len(sources)
 }
 
 func resume(providers []provider.Provider, chosen session.Session) error {
@@ -237,13 +260,38 @@ func runDoctor(store *index.Store, providers []provider.Provider, indexPath stri
 	if err != nil {
 		return err
 	}
+	states, err := store.ProviderStates()
+	if err != nil {
+		return err
+	}
 	fmt.Fprintf(stdout, "index\t%s\n", indexPath)
 	for _, p := range providers {
 		status := "unavailable"
 		if p.Available() {
 			status = "available"
 		}
-		fmt.Fprintf(stdout, "%s\t%s\t%d indexed\n", p.Name(), status, counts[p.Name()])
+		state, refreshed := states[p.Name()]
+		parserRevision := p.ParserRevision()
+		if !refreshed {
+			fmt.Fprintf(stdout, "%s\t%s\t%d indexed\tparser=v%d\trefresh=never\n",
+				p.Name(), status, counts[p.Name()], parserRevision)
+			continue
+		}
+		if state.ParserRevision != parserRevision {
+			fmt.Fprintf(stdout, "%s\t%s\t%d indexed\tparser=v%d\trefresh=pending\tprevious_parser=v%d\n",
+				p.Name(), status, counts[p.Name()], parserRevision, state.ParserRevision)
+			continue
+		}
+		refreshStatus := "ok"
+		if state.FailedSources > 0 || state.LastError != "" {
+			refreshStatus = "degraded"
+		}
+		fmt.Fprintf(stdout, "%s\t%s\t%d indexed\tparser=v%d\trefresh=%s\tscanned=%d changed=%d unchanged=%d skipped=%d failed=%d\n",
+			p.Name(), status, counts[p.Name()], parserRevision, refreshStatus, state.Scanned,
+			state.Changed, state.Unchanged, state.SkippedRecords, state.FailedSources)
+		if state.LastError != "" {
+			fmt.Fprintf(stdout, "  warning\t%s\n", state.LastError)
+		}
 	}
 	return nil
 }

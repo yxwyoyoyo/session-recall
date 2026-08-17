@@ -40,10 +40,11 @@ func TestKiroDiscoverReadsMetadataAndPromptText(t *testing.T) {
 	}
 
 	p := &Kiro{Home: home, Executable: "kiro-cli"}
-	items, err := p.Discover(context.Background(), nil)
+	discovery, err := p.Discover(context.Background(), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
+	items := discovery.Sessions
 	if len(items) != 1 {
 		t.Fatalf("got %d sessions", len(items))
 	}
@@ -56,7 +57,7 @@ func TestKiroDiscoverReadsMetadataAndPromptText(t *testing.T) {
 	}
 	known := map[string]int64{item.Source: item.Stamp}
 	unchanged, err := p.Discover(context.Background(), known)
-	if err != nil || len(unchanged) != 0 {
+	if err != nil || len(unchanged.Sessions) != 0 || unchanged.Unchanged != 1 {
 		t.Fatalf("expected unchanged source to be skipped: %#v, %v", unchanged, err)
 	}
 }
@@ -72,12 +73,77 @@ func TestKiroDiscoverToleratesJournalWithoutMetadata(t *testing.T) {
 		t.Fatal(err)
 	}
 	p := &Kiro{Home: home, Executable: "kiro-cli"}
-	items, err := p.Discover(context.Background(), nil)
+	discovery, err := p.Discover(context.Background(), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(items) != 1 || items[0].ID != "journal-only" || items[0].Title != "recover this conversation" {
-		t.Fatalf("unexpected sessions: %#v", items)
+	if len(discovery.Sessions) != 1 || discovery.Sessions[0].ID != "journal-only" || discovery.Sessions[0].Title != "recover this conversation" {
+		t.Fatalf("unexpected sessions: %#v", discovery.Sessions)
+	}
+}
+
+func TestKiroDiscoverRejectsUnsupportedPromptData(t *testing.T) {
+	home := t.TempDir()
+	dir := filepath.Join(home, "sessions", "cli")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	id := "changed"
+	if err := os.WriteFile(filepath.Join(dir, id+".json"), []byte(`{"session_id":"changed","cwd":"/repo"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	journal := `{"version":"v1","kind":"Prompt","data":{"content":[{"kind":"text","data":{"text":"new shape"}}]}}`
+	if err := os.WriteFile(filepath.Join(dir, id+".jsonl"), []byte(journal), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	discovery, err := (&Kiro{Home: home, Executable: "kiro-cli"}).Discover(context.Background(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(discovery.Sessions) != 0 || len(discovery.Failures) != 1 || discovery.SkippedRecords != 1 {
+		t.Fatalf("unsupported prompt data must not be applied: %#v", discovery)
+	}
+	if !strings.Contains(discovery.Failures[0].Err.Error(), "prompt record") {
+		t.Fatalf("unexpected failure: %v", discovery.Failures[0].Err)
+	}
+}
+
+func TestKiroDiscoverRejectsPromptWithoutContent(t *testing.T) {
+	home := t.TempDir()
+	dir := filepath.Join(home, "sessions", "cli")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "changed.jsonl"), []byte(`{"version":"v1","kind":"Prompt","data":{}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	discovery, err := (&Kiro{Home: home, Executable: "kiro-cli"}).Discover(context.Background(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(discovery.Sessions) != 0 || len(discovery.Failures) != 1 || discovery.SkippedRecords != 1 {
+		t.Fatalf("empty prompt envelope must not be applied: %#v", discovery)
+	}
+}
+
+func TestKiroDiscoverRejectsIncompleteMetadata(t *testing.T) {
+	home := t.TempDir()
+	dir := filepath.Join(home, "sessions", "cli")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "changed.json"), []byte(`{"session_id":"changed"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "changed.jsonl"), []byte(`{"version":"v1","kind":"Prompt","data":{"content":[{"kind":"text","data":"new prompt"}]}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	discovery, err := (&Kiro{Home: home, Executable: "kiro-cli"}).Discover(context.Background(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(discovery.Sessions) != 0 || len(discovery.Failures) != 1 || !strings.Contains(discovery.Failures[0].Err.Error(), "working directory") {
+		t.Fatalf("incomplete metadata must not be applied: %#v", discovery)
 	}
 }
 
