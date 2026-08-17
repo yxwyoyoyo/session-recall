@@ -109,7 +109,13 @@ session-recall doctor                  show provider and index status
 
 The index refreshes automatically when the picker starts. JSONL files that
 have not changed and OpenCode sessions whose update timestamp has not changed
-are skipped.
+are skipped. Parser revisions force only the affected provider sources to be
+decoded again. If a changed source no longer matches a recognized format,
+session-recall keeps its last successfully indexed content and reports the
+source as degraded in `session-recall doctor`.
+
+Provider compatibility policy, parser revision rules, and fixture guidance are
+documented in [`spec/compatibility.md`](spec/compatibility.md).
 
 ## Performance
 

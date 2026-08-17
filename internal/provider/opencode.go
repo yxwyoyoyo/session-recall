@@ -26,6 +26,8 @@ func NewOpenCode(home string, openDB func(string) (*sql.DB, error)) *OpenCode {
 
 func (p *OpenCode) Name() string { return "opencode" }
 
+func (p *OpenCode) ParserRevision() int { return 1 }
+
 func (p *OpenCode) dbPath() string {
 	return filepath.Join(p.Home, ".local", "share", "opencode", "opencode.db")
 }
@@ -36,10 +38,11 @@ func (p *OpenCode) Available() bool {
 	return commandErr == nil && dbErr == nil && p.OpenDB != nil
 }
 
-func (p *OpenCode) Discover(ctx context.Context, known map[string]int64) ([]session.Session, error) {
+func (p *OpenCode) Discover(ctx context.Context, known map[string]int64) (Discovery, error) {
+	report := Discovery{}
 	db, err := p.OpenDB(p.dbPath())
 	if err != nil {
-		return nil, err
+		return report, err
 	}
 	defer db.Close()
 
@@ -55,27 +58,28 @@ func (p *OpenCode) Discover(ctx context.Context, known map[string]int64) ([]sess
 		GROUP BY s.id
 		ORDER BY s.time_updated DESC`)
 	if err != nil {
-		return nil, fmt.Errorf("query OpenCode sessions: %w", err)
+		return report, fmt.Errorf("query OpenCode sessions: %w", err)
 	}
 	defer rows.Close()
 
-	var result []session.Session
 	for rows.Next() {
+		report.Scanned++
 		var item session.Session
 		var updated int64
 		if err := rows.Scan(&item.ID, &item.Directory, &item.Title, &updated, &item.Content); err != nil {
-			return nil, err
+			return report, err
 		}
 		if known[item.ID] == updated {
+			report.Unchanged++
 			continue
 		}
 		item.Provider = "opencode"
 		item.Source = item.ID
 		item.Stamp = updated
 		item.UpdatedAt = time.UnixMilli(updated)
-		result = append(result, item)
+		report.Sessions = append(report.Sessions, item)
 	}
-	return result, rows.Err()
+	return report, rows.Err()
 }
 
 func (p *OpenCode) ResumeCommand(s session.Session) (*exec.Cmd, error) {

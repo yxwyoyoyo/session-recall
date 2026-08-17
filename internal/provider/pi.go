@@ -66,13 +66,15 @@ func piConfiguredSessionDir(agentDir string) string {
 
 func (p *Pi) Name() string { return "pi" }
 
+func (p *Pi) ParserRevision() int { return 1 }
+
 func (p *Pi) Available() bool {
 	_, err := exec.LookPath(p.Executable)
 	return err == nil
 }
 
-func (p *Pi) Discover(ctx context.Context, known map[string]int64) ([]session.Session, error) {
-	var result []session.Session
+func (p *Pi) Discover(ctx context.Context, known map[string]int64) (Discovery, error) {
+	report := Discovery{}
 	err := filepath.WalkDir(p.SessionDir, func(path string, entry fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
@@ -83,27 +85,31 @@ func (p *Pi) Discover(ctx context.Context, known map[string]int64) ([]session.Se
 		if entry.IsDir() || filepath.Ext(path) != ".jsonl" {
 			return nil
 		}
+		report.Scanned++
 		info, err := entry.Info()
 		if err != nil {
 			return err
 		}
 		stamp := info.ModTime().UnixNano() ^ info.Size()
 		if known[path] == stamp {
+			report.Unchanged++
 			return nil
 		}
-		item, err := parsePiFile(path, stamp)
+		item, skipped, err := parsePiFile(path, stamp)
+		report.SkippedRecords += skipped
 		if err != nil {
-			return fmt.Errorf("%s: %w", path, err)
+			report.Failures = append(report.Failures, SourceFailure{Source: path, Err: err})
+			return nil
 		}
 		if item.ID != "" {
-			result = append(result, item)
+			report.Sessions = append(report.Sessions, item)
 		}
 		return nil
 	})
 	if os.IsNotExist(err) {
-		return result, nil
+		return report, nil
 	}
-	return result, err
+	return report, err
 }
 
 type piEntry struct {
@@ -121,19 +127,22 @@ type piMessage struct {
 	Timestamp int64           `json:"timestamp"`
 }
 
-func parsePiFile(path string, stamp int64) (session.Session, error) {
+func parsePiFile(path string, stamp int64) (session.Session, int, error) {
 	file, err := os.Open(path)
 	if err != nil {
-		return session.Session{}, err
+		return session.Session{}, 0, err
 	}
 	defer file.Close()
 
 	item := session.Session{Provider: "pi", Source: path, Stamp: stamp}
+	skipped := 0
+	incompatible := false
 	scanner := bufio.NewScanner(file)
 	scanner.Buffer(make([]byte, 64*1024), 32*1024*1024)
 	for scanner.Scan() {
 		var entry piEntry
 		if json.Unmarshal(scanner.Bytes(), &entry) != nil {
+			skipped++
 			continue
 		}
 		if updated, err := time.Parse(time.RFC3339Nano, entry.Timestamp); err == nil && updated.After(item.UpdatedAt) {
@@ -152,7 +161,12 @@ func parsePiFile(path string, stamp int64) (session.Session, error) {
 			if json.Unmarshal(entry.Message, &message) != nil || message.Role != "user" {
 				continue
 			}
-			text := piTextContent(message.Content)
+			text, recognized := piTextContent(message.Content)
+			if !recognized {
+				skipped++
+				incompatible = true
+				continue
+			}
 			if text == "" {
 				continue
 			}
@@ -167,25 +181,31 @@ func parsePiFile(path string, stamp int64) (session.Session, error) {
 		}
 	}
 	if err := scanner.Err(); err != nil {
-		return session.Session{}, fmt.Errorf("read Pi session: %w", err)
+		return session.Session{}, skipped, fmt.Errorf("read Pi session: %w", err)
+	}
+	if item.ID == "" {
+		return session.Session{}, skipped, fmt.Errorf("no recognizable Pi session header")
+	}
+	if incompatible {
+		return session.Session{}, skipped, fmt.Errorf("unsupported Pi user-message content shape")
 	}
 	if item.Title == "" {
 		item.Title = "Pi session"
 	}
-	return item, nil
+	return item, skipped, nil
 }
 
-func piTextContent(raw json.RawMessage) string {
+func piTextContent(raw json.RawMessage) (string, bool) {
 	var text string
 	if json.Unmarshal(raw, &text) == nil {
-		return strings.TrimSpace(text)
+		return strings.TrimSpace(text), true
 	}
 	var parts []struct {
 		Type string `json:"type"`
 		Text string `json:"text"`
 	}
 	if json.Unmarshal(raw, &parts) != nil {
-		return ""
+		return "", false
 	}
 	texts := make([]string, 0, len(parts))
 	for _, part := range parts {
@@ -193,7 +213,7 @@ func piTextContent(raw json.RawMessage) string {
 			texts = append(texts, strings.TrimSpace(part.Text))
 		}
 	}
-	return strings.Join(texts, "\n")
+	return strings.Join(texts, "\n"), true
 }
 
 func (p *Pi) ResumeCommand(s session.Session) (*exec.Cmd, error) {

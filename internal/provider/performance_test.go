@@ -23,7 +23,7 @@ func BenchmarkParseCodex1000Messages(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()
 	for range b.N {
-		item, err := parseCodexFile(path, 1, titles)
+		item, _, err := parseCodexFile(path, 1, titles)
 		if err != nil {
 			b.Fatal(err)
 		}
@@ -51,7 +51,7 @@ func BenchmarkParseKiro1000Prompts(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()
 	for range b.N {
-		item, err := parseKiroSession(metaPath, journalPath, "kiro")
+		item, _, err := parseKiroSession(metaPath, journalPath, "kiro")
 		if err != nil {
 			b.Fatal(err)
 		}
@@ -75,7 +75,7 @@ func BenchmarkParsePi1000Prompts(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()
 	for range b.N {
-		item, err := parsePiFile(path, 1)
+		item, _, err := parsePiFile(path, 1)
 		if err != nil {
 			b.Fatal(err)
 		}

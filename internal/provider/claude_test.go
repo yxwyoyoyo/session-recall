@@ -21,10 +21,11 @@ func TestClaudeDiscoverAggregatesUserPrompts(t *testing.T) {
 		t.Fatal(err)
 	}
 	p := NewClaude(home)
-	items, err := p.Discover(context.Background(), nil)
+	discovery, err := p.Discover(context.Background(), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
+	items := discovery.Sessions
 	if len(items) != 1 {
 		t.Fatalf("got %d sessions", len(items))
 	}
@@ -36,7 +37,7 @@ func TestClaudeDiscoverAggregatesUserPrompts(t *testing.T) {
 	}
 	known := map[string]int64{items[0].Source: items[0].Stamp}
 	unchanged, err := p.Discover(context.Background(), known)
-	if err != nil || len(unchanged) != 0 {
+	if err != nil || len(unchanged.Sessions) != 0 || unchanged.Unchanged != 1 {
 		t.Fatalf("expected unchanged source to be skipped: %#v, %v", unchanged, err)
 	}
 }

@@ -2,15 +2,30 @@ package main
 
 import (
 	"bytes"
+	"context"
+	"database/sql"
 	"encoding/json"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
 
+	"github.com/yxwyoyoyo/session-recall/internal/index"
+	"github.com/yxwyoyoyo/session-recall/internal/provider"
 	"github.com/yxwyoyoyo/session-recall/internal/session"
 )
+
+type doctorProvider struct{}
+
+func (doctorProvider) Name() string        { return "test-provider" }
+func (doctorProvider) ParserRevision() int { return 3 }
+func (doctorProvider) Available() bool     { return true }
+func (doctorProvider) Discover(context.Context, map[string]int64) (provider.Discovery, error) {
+	return provider.Discovery{}, nil
+}
+func (doctorProvider) ResumeCommand(session.Session) (*exec.Cmd, error) { return nil, nil }
 
 func TestResolveIndexPathMigratesLegacyDirectory(t *testing.T) {
 	cache := t.TempDir()
@@ -144,5 +159,36 @@ func TestPiDiscoveryToSearchPipeline(t *testing.T) {
 	}
 	if len(matches) != 1 || matches[0].Provider != "pi" || matches[0].ID != id {
 		t.Fatalf("unexpected matches: %#v", matches)
+	}
+}
+
+func TestDoctorReportsDegradedProviderDiagnostics(t *testing.T) {
+	db, err := sql.Open("sqlite", ":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	store, err := index.Open(db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { store.Close() })
+	if err := store.ApplyRefresh(context.Background(), "test-provider", 3, nil, index.RefreshStats{
+		Scanned: 4, Changed: 1, Unchanged: 2, SkippedRecords: 3,
+		FailedSources: 1, LastError: "/sessions/changed.jsonl: unsupported content shape",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	var output bytes.Buffer
+	if err := runDoctor(store, []provider.Provider{doctorProvider{}}, "/cache/index.db", &output); err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		"test-provider\tavailable\t0 indexed\tparser=v3\trefresh=degraded",
+		"scanned=4 changed=1 unchanged=2 skipped=3 failed=1",
+		"warning\t/sessions/changed.jsonl: unsupported content shape",
+	} {
+		if !strings.Contains(output.String(), want) {
+			t.Fatalf("doctor output missing %q:\n%s", want, output.String())
+		}
 	}
 }

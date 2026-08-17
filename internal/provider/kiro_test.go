@@ -40,10 +40,11 @@ func TestKiroDiscoverReadsMetadataAndPromptText(t *testing.T) {
 	}
 
 	p := &Kiro{Home: home, Executable: "kiro-cli"}
-	items, err := p.Discover(context.Background(), nil)
+	discovery, err := p.Discover(context.Background(), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
+	items := discovery.Sessions
 	if len(items) != 1 {
 		t.Fatalf("got %d sessions", len(items))
 	}
@@ -56,7 +57,7 @@ func TestKiroDiscoverReadsMetadataAndPromptText(t *testing.T) {
 	}
 	known := map[string]int64{item.Source: item.Stamp}
 	unchanged, err := p.Discover(context.Background(), known)
-	if err != nil || len(unchanged) != 0 {
+	if err != nil || len(unchanged.Sessions) != 0 || unchanged.Unchanged != 1 {
 		t.Fatalf("expected unchanged source to be skipped: %#v, %v", unchanged, err)
 	}
 }
@@ -72,12 +73,12 @@ func TestKiroDiscoverToleratesJournalWithoutMetadata(t *testing.T) {
 		t.Fatal(err)
 	}
 	p := &Kiro{Home: home, Executable: "kiro-cli"}
-	items, err := p.Discover(context.Background(), nil)
+	discovery, err := p.Discover(context.Background(), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(items) != 1 || items[0].ID != "journal-only" || items[0].Title != "recover this conversation" {
-		t.Fatalf("unexpected sessions: %#v", items)
+	if len(discovery.Sessions) != 1 || discovery.Sessions[0].ID != "journal-only" || discovery.Sessions[0].Title != "recover this conversation" {
+		t.Fatalf("unexpected sessions: %#v", discovery.Sessions)
 	}
 }
 

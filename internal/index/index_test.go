@@ -59,3 +59,97 @@ func TestEmptySearchReturnsRecentAndEmptySlice(t *testing.T) {
 		t.Fatalf("expected non-nil empty slice, got %#v", matches)
 	}
 }
+
+func TestParserRevisionRetriesFailuresAndPreservesLastGoodSource(t *testing.T) {
+	store := testStore(t)
+	ctx := context.Background()
+	old := session.Session{
+		Provider: "pi", ID: "one", Title: "Old title", Directory: "/repo",
+		UpdatedAt: time.Unix(10, 0), Content: "last good prompt", Source: "session.jsonl", Stamp: 10,
+	}
+	other := session.Session{
+		Provider: "pi", ID: "two", Title: "Other title", Directory: "/repo",
+		UpdatedAt: time.Unix(10, 0), Content: "other prompt", Source: "other.jsonl", Stamp: 10,
+	}
+	if err := store.ApplyRefresh(ctx, "pi", 1, []session.Session{old, other}, RefreshStats{Scanned: 2, Changed: 2}); err != nil {
+		t.Fatal(err)
+	}
+	known, err := store.Known("pi", 1)
+	if err != nil || known[old.Source] != old.Stamp {
+		t.Fatalf("known v1 = %#v, err=%v", known, err)
+	}
+	known, err = store.Known("pi", 2)
+	if err != nil || len(known) != 0 {
+		t.Fatalf("parser revision should force reparse: %#v, err=%v", known, err)
+	}
+
+	other.Content = "other prompt updated"
+	other.Stamp = 20
+	if err := store.ApplyRefresh(ctx, "pi", 2, []session.Session{other}, RefreshStats{
+		Scanned: 2, Changed: 1, FailedSources: 1, LastError: "session.jsonl: unknown schema",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	matches, err := store.Search(ctx, "last good", Filters{Provider: "pi", Limit: 10})
+	if err != nil || len(matches) != 1 || matches[0].Title != "Old title" {
+		t.Fatalf("last-good data was not preserved: %#v, err=%v", matches, err)
+	}
+	known, err = store.Known("pi", 2)
+	if err != nil || len(known) != 1 || known[other.Source] != other.Stamp {
+		t.Fatalf("failed source should remain eligible for retry: %#v, err=%v", known, err)
+	}
+
+	updated := old
+	updated.Title = "New title"
+	updated.Content = "new compatible prompt"
+	updated.Stamp = 20
+	if err := store.ApplyRefresh(ctx, "pi", 2, []session.Session{updated}, RefreshStats{Scanned: 1, Changed: 1}); err != nil {
+		t.Fatal(err)
+	}
+	known, err = store.Known("pi", 2)
+	if err != nil || len(known) != 2 || known[updated.Source] != updated.Stamp || known[other.Source] != other.Stamp {
+		t.Fatalf("known v2 = %#v, err=%v", known, err)
+	}
+	matches, err = store.Search(ctx, "last good", Filters{Provider: "pi", Limit: 10})
+	if err != nil || len(matches) != 0 {
+		t.Fatalf("old source content should be replaced: %#v, err=%v", matches, err)
+	}
+}
+
+func TestOpenMigratesExistingSessionsTableWithParserRevision(t *testing.T) {
+	db, err := sql.Open("sqlite", ":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if _, err := db.Exec(`CREATE TABLE sessions (
+		provider TEXT NOT NULL, id TEXT NOT NULL, title TEXT NOT NULL,
+		directory TEXT NOT NULL, updated_at INTEGER NOT NULL, source TEXT NOT NULL,
+		stamp INTEGER NOT NULL, PRIMARY KEY (provider, id));`); err != nil {
+		t.Fatal(err)
+	}
+	store, err := Open(db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	rows, err := db.Query(`PRAGMA table_info(sessions)`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	found := false
+	for rows.Next() {
+		var cid int
+		var name, columnType string
+		var notNull, primaryKey int
+		var defaultValue any
+		if err := rows.Scan(&cid, &name, &columnType, &notNull, &defaultValue, &primaryKey); err != nil {
+			t.Fatal(err)
+		}
+		found = found || name == "parser_revision"
+	}
+	if !found {
+		t.Fatal("parser_revision column was not migrated")
+	}
+}
