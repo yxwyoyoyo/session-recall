@@ -77,6 +77,7 @@ func run(args []string, stdout, stderr io.Writer) error {
 		provider.NewCodex(home),
 		provider.NewOpenCode(home, openReadOnly),
 		provider.NewKiro(home),
+		provider.NewPi(home),
 	}
 
 	if len(args) > 0 {
@@ -256,7 +257,7 @@ Usage:
   session-recall doctor
 
 Options:
-  -p, --provider NAME   limit to claude, codex, opencode, or kiro
+  -p, --provider NAME   limit to claude, codex, opencode, kiro, or pi
   -c, --cwd             limit to the current directory
   -n, --limit N         maximum results (default 50)
   -j, --json            print results without opening the picker

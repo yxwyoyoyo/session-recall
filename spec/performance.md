@@ -16,6 +16,7 @@ because CI runners and developer machines vary substantially.
 ### Provider discovery
 
 - Unchanged Codex JSONL files must not be parsed again.
+- Unchanged Kiro and Pi JSONL files must not be parsed again.
 - Unchanged OpenCode sessions must be excluded by `time_updated` before their
   message content is aggregated.
 - Claude history may be scanned as one append-oriented file, but its cost must
@@ -68,6 +69,7 @@ The suite measures:
 - transactional upsert of 1,000 sessions
 - parsing a Codex JSONL transcript with 1,000 user messages
 - parsing a Kiro JSONL journal with 1,000 user prompts
+- parsing a Pi JSONL session with 1,000 user prompts
 - rendering a picker window with 50 visible results
 
 Benchmarks create isolated in-memory databases and temporary fixtures. They do

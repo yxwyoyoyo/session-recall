@@ -3,10 +3,10 @@
 Find and resume AI coding sessions by what you remember, not by an opaque
 session ID.
 
-`session-recall` discovers sessions created by Claude Code, Codex, OpenCode, and
-Kiro CLI, indexes their titles, original working directories, and user prompts
-locally, then presents one searchable terminal picker. Selecting a result
-starts the original harness in the original directory.
+`session-recall` discovers sessions created by Claude Code, Codex, OpenCode,
+Kiro CLI, and Pi, indexes their titles, original working directories, and user
+prompts locally, then presents one searchable terminal picker. Selecting a
+result starts the original harness in the original directory.
 
 ```text
 $ session-recall "pane status"
@@ -33,6 +33,15 @@ against captured-format fixtures and the official resume contract:
 The Kiro adapter targets the stable v2 session triplet (`.json`, `.jsonl`, and
 optional `.history`). The incompatible Kiro CLI v3 early-access format is not
 yet supported.
+
+Pi is installed on the development machine. Its adapter is verified against
+official-format v3 fixtures and the installed CLI's exact-file resume contract:
+
+- Pi (`~/.pi/agent/sessions`, respecting global settings and
+  `PI_CODING_AGENT_DIR` / `PI_CODING_AGENT_SESSION_DIR` overrides)
+
+Only Pi user messages are indexed; assistant, tool, and extension content is
+left in Pi's source JSONL files.
 
 Provider stores are opened read-only. The derived search index lives at the
 platform user-cache location (`~/Library/Caches/session-recall/index.db` on
@@ -89,6 +98,7 @@ session-recall                         browse recent sessions
 session-recall "permission hook"       search session content
 session-recall -p codex                show only Codex sessions
 session-recall -p kiro                 show only Kiro CLI sessions
+session-recall -p pi                   show only Pi sessions
 session-recall -c                      show sessions for the current directory
 session-recall -j "query"              return machine-readable results
 session-recall -n 20                   limit the number of results
@@ -104,8 +114,8 @@ are skipped.
 ## Performance
 
 The project includes repeatable Go benchmarks for FTS search at 1,000 and
-10,000 sessions, recent-session lookup, transactional indexing, and Codex
-JSONL parsing:
+10,000 sessions, recent-session lookup, transactional indexing, and Codex,
+Kiro, and Pi JSONL parsing:
 
 ```sh
 mise run bench
@@ -137,6 +147,7 @@ claude --resume SESSION_ID
 codex resume SESSION_ID -C DIRECTORY
 opencode DIRECTORY --session SESSION_ID
 kiro-cli chat --resume-id SESSION_ID
+pi --session SESSION_FILE
 ```
 
 The opaque identifier remains internal to normal interactive use.
