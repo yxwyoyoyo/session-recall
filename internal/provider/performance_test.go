@@ -60,3 +60,27 @@ func BenchmarkParseKiro1000Prompts(b *testing.B) {
 		}
 	}
 }
+
+func BenchmarkParsePi1000Prompts(b *testing.B) {
+	path := filepath.Join(b.TempDir(), "pi.jsonl")
+	var data strings.Builder
+	data.WriteString(`{"type":"session","version":3,"id":"pi-uuid","timestamp":"2026-01-01T10:00:00Z","cwd":"/workspace/project"}`)
+	data.WriteByte('\n')
+	for i := range 1_000 {
+		fmt.Fprintf(&data, "{\"type\":\"message\",\"id\":\"%08d\",\"parentId\":null,\"timestamp\":\"2026-01-01T10:01:00Z\",\"message\":{\"role\":\"user\",\"content\":\"investigate pane lifecycle prompt %d\",\"timestamp\":1767261660000}}\n", i, i)
+	}
+	if err := os.WriteFile(path, []byte(data.String()), 0o600); err != nil {
+		b.Fatal(err)
+	}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for range b.N {
+		item, err := parsePiFile(path, 1)
+		if err != nil {
+			b.Fatal(err)
+		}
+		if item.ID != "pi-uuid" {
+			b.Fatalf("unexpected session: %#v", item)
+		}
+	}
+}

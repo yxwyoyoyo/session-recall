@@ -154,7 +154,7 @@ func (s *Store) Search(ctx context.Context, query string, filters Filters) ([]se
 	}
 	args = append(args, filters.Limit)
 	querySQL := `
-		SELECT s.provider, s.id, s.title, s.directory, s.updated_at,
+		SELECT s.provider, s.id, s.title, s.directory, s.updated_at, s.source,
 		       snippet(session_fts, 4, '[', ']', ' … ', 18), bm25(session_fts)
 		FROM session_fts
 		JOIN sessions s ON s.provider = session_fts.provider AND s.id = session_fts.session_id
@@ -181,7 +181,7 @@ func (s *Store) recent(ctx context.Context, filters Filters) ([]session.Match, e
 	}
 	args = append(args, filters.Limit)
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT provider, id, title, directory, updated_at, '', 0.0
+		SELECT provider, id, title, directory, updated_at, source, '', 0.0
 		FROM sessions WHERE `+strings.Join(conditions, " AND ")+`
 		ORDER BY updated_at DESC LIMIT ?`, args...)
 	if err != nil {
@@ -197,7 +197,7 @@ func scanMatches(rows *sql.Rows, ranked bool) ([]session.Match, error) {
 		var item session.Match
 		var updated int64
 		var rank float64
-		if err := rows.Scan(&item.Provider, &item.ID, &item.Title, &item.Directory, &updated, &item.Snippet, &rank); err != nil {
+		if err := rows.Scan(&item.Provider, &item.ID, &item.Title, &item.Directory, &updated, &item.Source, &item.Snippet, &rank); err != nil {
 			return nil, err
 		}
 		item.UpdatedAt = time.UnixMilli(updated)

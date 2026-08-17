@@ -44,6 +44,9 @@ func TestSearchesContentAndFiltersProvider(t *testing.T) {
 	if matches[0].Snippet == "" {
 		t.Fatal("expected content snippet")
 	}
+	if matches[0].Source != "one.jsonl" {
+		t.Fatalf("source = %q, want one.jsonl", matches[0].Source)
+	}
 }
 
 func TestEmptySearchReturnsRecentAndEmptySlice(t *testing.T) {
