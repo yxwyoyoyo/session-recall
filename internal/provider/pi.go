@@ -163,7 +163,7 @@ func parsePiFile(path string, stamp int64) (session.Session, int, error) {
 			}
 		case "message":
 			var message piMessage
-			if json.Unmarshal(entry.Message, &message) != nil {
+			if json.Unmarshal(entry.Message, &message) != nil || message.Role == "" {
 				skipped++
 				incompatible = true
 				continue
@@ -195,6 +195,9 @@ func parsePiFile(path string, stamp int64) (session.Session, int, error) {
 	}
 	if item.ID == "" {
 		return session.Session{}, skipped, fmt.Errorf("no recognizable Pi session header")
+	}
+	if item.Directory == "" {
+		return session.Session{}, skipped, fmt.Errorf("Pi session header has no working directory")
 	}
 	if incompatible {
 		return session.Session{}, skipped, fmt.Errorf("unsupported or malformed Pi session record")

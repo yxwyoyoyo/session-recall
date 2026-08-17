@@ -108,6 +108,45 @@ func TestKiroDiscoverRejectsUnsupportedPromptData(t *testing.T) {
 	}
 }
 
+func TestKiroDiscoverRejectsPromptWithoutContent(t *testing.T) {
+	home := t.TempDir()
+	dir := filepath.Join(home, "sessions", "cli")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "changed.jsonl"), []byte(`{"version":"v1","kind":"Prompt","data":{}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	discovery, err := (&Kiro{Home: home, Executable: "kiro-cli"}).Discover(context.Background(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(discovery.Sessions) != 0 || len(discovery.Failures) != 1 || discovery.SkippedRecords != 1 {
+		t.Fatalf("empty prompt envelope must not be applied: %#v", discovery)
+	}
+}
+
+func TestKiroDiscoverRejectsIncompleteMetadata(t *testing.T) {
+	home := t.TempDir()
+	dir := filepath.Join(home, "sessions", "cli")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "changed.json"), []byte(`{"session_id":"changed"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "changed.jsonl"), []byte(`{"version":"v1","kind":"Prompt","data":{"content":[{"kind":"text","data":"new prompt"}]}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	discovery, err := (&Kiro{Home: home, Executable: "kiro-cli"}).Discover(context.Background(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(discovery.Sessions) != 0 || len(discovery.Failures) != 1 || !strings.Contains(discovery.Failures[0].Err.Error(), "working directory") {
+		t.Fatalf("incomplete metadata must not be applied: %#v", discovery)
+	}
+}
+
 func TestKiroResumeCommandUsesExplicitChatSubcommand(t *testing.T) {
 	p := &Kiro{Executable: "kiro-cli"}
 	cmd, err := p.ResumeCommand(sessionFixture("kiro", "abc-123", "/repo"))

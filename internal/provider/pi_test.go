@@ -183,3 +183,39 @@ func TestPiDiscoverRejectsMalformedMessageEnvelope(t *testing.T) {
 		t.Fatalf("unexpected failure: %v", discovery.Failures[0].Err)
 	}
 }
+
+func TestPiDiscoverRejectsNullMessageEnvelope(t *testing.T) {
+	dir := t.TempDir()
+	journal := strings.Join([]string{
+		`{"type":"session","version":4,"id":"pi-new","timestamp":"2026-08-17T10:00:00Z","cwd":"/repo"}`,
+		`{"type":"message","timestamp":"2026-08-17T10:00:01Z","message":null}`,
+	}, "\n")
+	if err := os.WriteFile(filepath.Join(dir, "changed.jsonl"), []byte(journal), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	discovery, err := (&Pi{SessionDir: dir, Executable: "pi"}).Discover(context.Background(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(discovery.Sessions) != 0 || len(discovery.Failures) != 1 || discovery.SkippedRecords != 1 {
+		t.Fatalf("null message envelope must not be applied: %#v", discovery)
+	}
+}
+
+func TestPiDiscoverRejectsSessionWithoutWorkingDirectory(t *testing.T) {
+	dir := t.TempDir()
+	journal := strings.Join([]string{
+		`{"type":"session","version":4,"id":"pi-new","timestamp":"2026-08-17T10:00:00Z"}`,
+		`{"type":"message","timestamp":"2026-08-17T10:00:01Z","message":{"role":"user","content":"new prompt"}}`,
+	}, "\n")
+	if err := os.WriteFile(filepath.Join(dir, "changed.jsonl"), []byte(journal), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	discovery, err := (&Pi{SessionDir: dir, Executable: "pi"}).Discover(context.Background(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(discovery.Sessions) != 0 || len(discovery.Failures) != 1 || !strings.Contains(discovery.Failures[0].Err.Error(), "working directory") {
+		t.Fatalf("incomplete session header must not be applied: %#v", discovery)
+	}
+}

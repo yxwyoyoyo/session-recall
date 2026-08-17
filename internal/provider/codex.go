@@ -134,6 +134,11 @@ func parseCodexFile(path string, stamp int64, titles map[string]codexTitle) (ses
 			}
 		}
 		payloadType, _ := row.Payload["type"].(string)
+		if row.Type == "event_msg" && payloadType == "" {
+			skipped++
+			incompatible = true
+			continue
+		}
 		if row.Type == "event_msg" && payloadType == "user_message" {
 			message, exists := row.Payload["message"]
 			text, isString := message.(string)
@@ -158,6 +163,9 @@ func parseCodexFile(path string, stamp int64, titles map[string]codexTitle) (ses
 	}
 	if item.ID == "" {
 		return session.Session{}, skipped, fmt.Errorf("no recognizable Codex session metadata")
+	}
+	if item.Directory == "" {
+		return session.Session{}, skipped, fmt.Errorf("Codex session metadata has no working directory")
 	}
 	if incompatible {
 		return session.Session{}, skipped, fmt.Errorf("unsupported or malformed Codex session record")

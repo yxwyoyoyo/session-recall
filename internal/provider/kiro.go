@@ -174,6 +174,9 @@ func parseKiroSession(metaPath, journalPath, fallbackID string) (session.Session
 		if meta.SessionID != "" {
 			item.ID = meta.SessionID
 		}
+		if meta.SessionID == "" || meta.CWD == "" {
+			return session.Session{}, skipped, fmt.Errorf("metadata has no session identity or working directory")
+		}
 		item.Directory = meta.CWD
 		item.Title = strings.TrimSpace(meta.Title)
 		if meta.UpdatedAt != "" {
@@ -199,6 +202,11 @@ func parseKiroSession(metaPath, journalPath, fallbackID string) (session.Session
 				continue
 			}
 			if envelope.Kind != "Prompt" {
+				continue
+			}
+			if len(envelope.Data.Content) == 0 {
+				skipped++
+				incompatible = true
 				continue
 			}
 			for _, part := range envelope.Data.Content {
