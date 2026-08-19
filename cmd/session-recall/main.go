@@ -17,6 +17,7 @@ import (
 	"golang.org/x/term"
 	_ "modernc.org/sqlite"
 
+	"github.com/yxwyoyoyo/session-recall/internal/config"
 	"github.com/yxwyoyoyo/session-recall/internal/index"
 	"github.com/yxwyoyoyo/session-recall/internal/provider"
 	"github.com/yxwyoyoyo/session-recall/internal/session"
@@ -54,7 +55,11 @@ func run(args []string, stdout, stderr io.Writer) error {
 	if err != nil {
 		return err
 	}
-	indexPath, err := resolveIndexPath(cache)
+	cfg, err := loadConfig(home)
+	if err != nil {
+		return err
+	}
+	indexPath, err := indexPathFor(cfg, cache, home)
 	if err != nil {
 		return err
 	}
@@ -85,7 +90,7 @@ func run(args []string, stdout, stderr io.Writer) error {
 		case "index":
 			return runIndex(args[1:], store, providers, stdout, stderr)
 		case "doctor":
-			return runDoctor(store, providers, indexPath, stdout)
+			return runDoctor(store, providers, indexPath, cfg, rcPathFor(home), stdout)
 		case "version", "--version", "-v":
 			fmt.Fprintln(stdout, version)
 			return nil
@@ -142,6 +147,28 @@ func run(args []string, stdout, stderr io.Writer) error {
 		return err
 	}
 	return resume(providers, *chosen)
+}
+
+// rcPathFor returns the resolved rc file location for home.
+func rcPathFor(home string) string {
+	return config.Path(home, os.Getenv("SESSION_RECALL_RC"))
+}
+
+func loadConfig(home string) (config.Config, error) {
+	return config.Load(rcPathFor(home))
+}
+
+// indexPathFor returns the database location: the rc database override if
+// set, otherwise the cache default with legacy migration.
+func indexPathFor(cfg config.Config, cache, home string) (string, error) {
+	if cfg.Database != "" {
+		path := config.ExpandHome(cfg.Database, home)
+		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+			return "", err
+		}
+		return path, nil
+	}
+	return resolveIndexPath(cache)
 }
 
 func resolveIndexPath(cache string) (string, error) {
@@ -255,7 +282,7 @@ func runIndex(args []string, store *index.Store, providers []provider.Provider, 
 	return nil
 }
 
-func runDoctor(store *index.Store, providers []provider.Provider, indexPath string, stdout io.Writer) error {
+func runDoctor(store *index.Store, providers []provider.Provider, indexPath string, cfg config.Config, rcPath string, stdout io.Writer) error {
 	counts, err := store.Counts()
 	if err != nil {
 		return err
@@ -263,6 +290,9 @@ func runDoctor(store *index.Store, providers []provider.Provider, indexPath stri
 	states, err := store.ProviderStates()
 	if err != nil {
 		return err
+	}
+	if cfg.Database != "" {
+		fmt.Fprintf(stdout, "config\t%s\n", rcPath)
 	}
 	fmt.Fprintf(stdout, "index\t%s\n", indexPath)
 	for _, p := range providers {
@@ -309,5 +339,7 @@ Options:
   -c, --cwd             limit to the current directory
   -n, --limit N         maximum results (default 50)
   -j, --json            print results without opening the picker
-      --refresh=false   search the existing index without refreshing`)
+      --refresh=false   search the existing index without refreshing
+  SESSION_RECALL_RC    rc file path (default ~/.config/session-recall/rc)
+  database in rc       override the index database location`)
 }
