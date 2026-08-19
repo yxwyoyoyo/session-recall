@@ -137,9 +137,109 @@ var homeDir = func() string { return "" }
 func SetHome(path string) { homeDir = func() string { return path } }
 
 func truncate(text string, width int) string {
-	if width <= 4 || len([]rune(text)) <= width {
+	if width <= 4 {
 		return text
 	}
-	runes := []rune(text)
-	return string(runes[:width-1]) + "…"
+	scanner := ansiScanner{}
+	visible := 0
+	fits := true
+	for _, r := range text {
+		if scanner.visible(r) {
+			visible++
+			if visible > width {
+				fits = false
+				break
+			}
+		}
+	}
+	if fits {
+		return text
+	}
+	var out strings.Builder
+	scanner = ansiScanner{}
+	visible = 0
+	hasANSI := false
+	for _, r := range text {
+		if !scanner.visible(r) {
+			hasANSI = true
+			out.WriteRune(r)
+			continue
+		}
+		if visible == width-1 {
+			out.WriteString("…")
+			if hasANSI {
+				out.WriteString("\x1b[0m")
+			}
+			return out.String()
+		}
+		out.WriteRune(r)
+		visible++
+	}
+	return text // unreachable: fits is false, so a cut is guaranteed
+}
+
+// ansiScanner classifies runes as display content or escape-sequence bytes.
+// Escape sequences are consumed verbatim and never counted toward the
+// visible width: CSI (ESC [ ...), OSC/DCS/PM/APC (ESC ]/P/_/^ ... until BEL
+// or ST), two-byte sequences (ESC X), and three-byte selectors (ESC # 8,
+// ESC ( B, ESC % G, ESC SP F).
+type ansiScanner struct {
+	state int
+}
+
+const (
+	seqNone = iota
+	seqIntro
+	seqTwo
+	seqCSI
+	seqOSC
+	seqOSCST
+)
+
+func (s *ansiScanner) visible(r rune) bool {
+	switch s.state {
+	case seqIntro:
+		switch {
+		case r == '[':
+			s.state = seqCSI
+		case r == ']' || r == 'P' || r == '_' || r == '^':
+			s.state = seqOSC
+		case r == '\x1b':
+			// Nested ESC starts a new sequence.
+		case r == '#' || r == '(' || r == ')' || r == '*' || r == '+' || r == '%' || r == ' ':
+			// Selector with one more byte: ESC # 8, ESC ( B, ESC % G, ESC SP F.
+			s.state = seqTwo
+		default:
+			s.state = seqNone
+		}
+		return false
+	case seqTwo:
+		s.state = seqNone
+		return false
+	case seqCSI:
+		// Final byte: params are 0x30-0x3f, intermediates 0x20-0x2f.
+		if r >= 0x40 && r <= 0x7e {
+			s.state = seqNone
+		}
+		return false
+	case seqOSC:
+		if r == 0x07 {
+			s.state = seqNone
+		} else if r == '\x1b' {
+			s.state = seqOSCST
+		}
+		return false
+	case seqOSCST:
+		if r == '\\' {
+			s.state = seqNone
+		} else {
+			s.state = seqOSC
+		}
+		return false
+	}
+	if r == '\x1b' {
+		s.state = seqIntro
+		return false
+	}
+	return true
 }
