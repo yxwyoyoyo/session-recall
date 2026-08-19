@@ -8,6 +8,7 @@ import (
 
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/x/ansi"
 	"github.com/yxwyoyoyo/session-recall/internal/index"
 	"github.com/yxwyoyoyo/session-recall/internal/session"
 )
@@ -105,6 +106,7 @@ func (p *Picker) View() string {
 	}
 	end := min(len(p.results), start+visible)
 	snippetTop := min(snippetTopN, visible/3)
+	tokens := strings.Fields(strings.ToLower(p.input.Value()))
 	for i := start; i < end; i++ {
 		item := p.results[i]
 		marker := "  "
@@ -112,23 +114,26 @@ func (p *Picker) View() string {
 			marker = "\x1b[1;33m→ \x1b[0m"
 		}
 		age := index.FormatAge(item.UpdatedAt, time.Now())
+		dir := highlight(compactHome(item.Directory), tokens, "\x1b[0m\x1b[1;33m", "\x1b[0m\x1b[94m")
 		meta := fmt.Sprintf("\x1b[2m%s · \x1b[0m\x1b[94m%s\x1b[0m  \x1b[36m%s\x1b[0m",
-			age, compactHome(item.Directory), item.Provider)
-		title := item.Title
+			age, dir, item.Provider)
+		title := highlight(item.Title, tokens, "\x1b[1;33m", "\x1b[0m")
 		if narrow {
 			out.WriteString(truncate(marker+title, p.width))
 			out.WriteByte('\n')
 			out.WriteString(truncate("  "+meta, p.width))
 		} else {
-			title = truncate(title, max(4, p.width-visibleRunes(meta)-visibleRunes(marker)))
-			pad := max(0, p.width-visibleRunes(marker+title)-visibleRunes(meta))
+			metaWidth := ansi.StringWidth(meta)
+			title = truncate(title, max(4, p.width-metaWidth-2))
+			pad := max(0, p.width-2-ansi.StringWidth(title)-metaWidth)
 			out.WriteString(marker + title + strings.Repeat(" ", pad) + meta)
 		}
 		out.WriteByte('\n')
 		if (i < snippetTop || i == p.cursor) && item.Snippet != "" {
-			snippet := strings.ReplaceAll(item.Snippet, "[", "\x1b[1;33m")
-			snippet = strings.ReplaceAll(snippet, "]", "\x1b[0m\x1b[2m")
-			out.WriteString(truncate("    \x1b[2m"+strings.Join(strings.Fields(snippet), " ")+"\x1b[0m", p.width))
+			snippet := strings.NewReplacer("[", "", "]", "").Replace(item.Snippet)
+			snippet = strings.Join(strings.Fields(snippet), " ")
+			snippet = highlight(snippet, tokens, "\x1b[0m\x1b[1;33m", "\x1b[0m\x1b[2m")
+			out.WriteString(truncate("    \x1b[2m"+snippet+"\x1b[0m", p.width))
 			out.WriteByte('\n')
 		}
 	}
@@ -157,121 +162,52 @@ const (
 )
 
 func truncate(text string, width int) string {
-	if width <= 4 {
+	if width <= 4 || ansi.StringWidth(text) <= width {
 		return text
 	}
-	scanner := ansiScanner{}
-	visible := 0
-	fits := true
-	for _, r := range text {
-		if scanner.visible(r) {
-			visible++
-			if visible > width {
-				fits = false
-				break
-			}
+	return ansi.Truncate(text, width, "…") + "\x1b[0m"
+}
+
+// highlight wraps every case-insensitive occurrence of any token in text
+// with open/close styles. Overlapping matches are never double-wrapped.
+func highlight(text string, tokens []string, open, close string) string {
+	if len(tokens) == 0 || text == "" {
+		return text
+	}
+	lower := strings.ToLower(text)
+	matched := false
+	for _, tok := range tokens {
+		if tok != "" && strings.Contains(lower, tok) {
+			matched = true
+			break
 		}
 	}
-	if fits {
+	if !matched {
 		return text
 	}
 	var out strings.Builder
-	scanner = ansiScanner{}
-	visible = 0
-	hasANSI := false
-	for _, r := range text {
-		if !scanner.visible(r) {
-			hasANSI = true
-			out.WriteRune(r)
-			continue
-		}
-		if visible == width-1 {
-			out.WriteString("…")
-			if hasANSI {
-				out.WriteString("\x1b[0m")
+	out.Grow(len(text) + 16)
+	i := 0
+	for i < len(lower) {
+		best, bestTok := -1, ""
+		for _, tok := range tokens {
+			if tok == "" {
+				continue
 			}
-			return out.String()
+			if idx := strings.Index(lower[i:], tok); idx >= 0 && (best == -1 || idx < best) {
+				best, bestTok = idx, tok
+			}
 		}
-		out.WriteRune(r)
-		visible++
+		if best == -1 {
+			out.WriteString(text[i:])
+			break
+		}
+		out.WriteString(text[i : i+best])
+		end := i + best + len(bestTok)
+		out.WriteString(open)
+		out.WriteString(text[i+best : end])
+		out.WriteString(close)
+		i = end
 	}
-	return text // unreachable: fits is false, so a cut is guaranteed
-}
-
-// visibleRunes counts display runes in text; escape sequences cost nothing.
-func visibleRunes(text string) int {
-	scanner := ansiScanner{}
-	count := 0
-	for _, r := range text {
-		if scanner.visible(r) {
-			count++
-		}
-	}
-	return count
-}
-
-// ansiScanner classifies runes as display content or escape-sequence bytes.
-// Escape sequences are consumed verbatim and never counted toward the
-// visible width: CSI (ESC [ ...), OSC/DCS/PM/APC (ESC ]/P/_/^ ... until BEL
-// or ST), two-byte sequences (ESC X), and three-byte selectors (ESC # 8,
-// ESC ( B, ESC % G, ESC SP F).
-type ansiScanner struct {
-	state int
-}
-
-const (
-	seqNone = iota
-	seqIntro
-	seqTwo
-	seqCSI
-	seqOSC
-	seqOSCST
-)
-
-func (s *ansiScanner) visible(r rune) bool {
-	switch s.state {
-	case seqIntro:
-		switch {
-		case r == '[':
-			s.state = seqCSI
-		case r == ']' || r == 'P' || r == '_' || r == '^':
-			s.state = seqOSC
-		case r == '\x1b':
-			// Nested ESC starts a new sequence.
-		case r == '#' || r == '(' || r == ')' || r == '*' || r == '+' || r == '%' || r == ' ':
-			// Selector with one more byte: ESC # 8, ESC ( B, ESC % G, ESC SP F.
-			s.state = seqTwo
-		default:
-			s.state = seqNone
-		}
-		return false
-	case seqTwo:
-		s.state = seqNone
-		return false
-	case seqCSI:
-		// Final byte: params are 0x30-0x3f, intermediates 0x20-0x2f.
-		if r >= 0x40 && r <= 0x7e {
-			s.state = seqNone
-		}
-		return false
-	case seqOSC:
-		if r == 0x07 {
-			s.state = seqNone
-		} else if r == '\x1b' {
-			s.state = seqOSCST
-		}
-		return false
-	case seqOSCST:
-		if r == '\\' {
-			s.state = seqNone
-		} else {
-			s.state = seqOSC
-		}
-		return false
-	}
-	if r == '\x1b' {
-		s.state = seqIntro
-		return false
-	}
-	return true
+	return out.String()
 }
