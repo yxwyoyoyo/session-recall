@@ -303,21 +303,31 @@ func (s *Store) Search(ctx context.Context, query string, filters Filters) ([]se
 	conditions := []string{"session_fts MATCH ?"}
 	args := []any{match}
 	if filters.Provider != "" {
-		conditions = append(conditions, "s.provider = ?")
+		conditions = append(conditions, "session_fts.provider = ?")
 		args = append(args, filters.Provider)
 	}
 	if filters.CWD != "" {
-		conditions = append(conditions, "s.directory = ?")
+		conditions = append(conditions, "session_fts.directory = ?")
 		args = append(args, filters.CWD)
 	}
 	args = append(args, filters.Limit)
+	// Rank a narrow (rowid, rank, updated_at) projection in the subquery, then
+	// fetch the limited top rows with snippet and metadata. Sorting and snippet
+	// extraction over every matching row, as in a single-level query, is the
+	// dominant cost when thousands of sessions match. Keeping updated_at in the
+	// subquery preserves the recency tiebreak when the limit cuts through a
+	// group of equal-rank rows.
 	querySQL := `
 		SELECT s.provider, s.id, s.title, s.directory, s.updated_at, s.source,
-		       snippet(session_fts, 4, '[', ']', ' … ', 18), bm25(session_fts)
-		FROM session_fts
+		       snippet(session_fts, 4, '[', ']', ' … ', 18), t.rank
+		FROM (SELECT session_fts.rowid AS r, bm25(session_fts) AS rank, s.updated_at AS upd
+		      FROM session_fts
+		      JOIN sessions s ON s.provider = session_fts.provider AND s.id = session_fts.session_id
+		      WHERE ` + strings.Join(conditions, " AND ") + `
+		      ORDER BY rank ASC, upd DESC LIMIT ?) t
+		JOIN session_fts ON session_fts.rowid = t.r
 		JOIN sessions s ON s.provider = session_fts.provider AND s.id = session_fts.session_id
-		WHERE ` + strings.Join(conditions, " AND ") + `
-		ORDER BY bm25(session_fts), s.updated_at DESC LIMIT ?`
+		ORDER BY t.rank ASC, t.upd DESC`
 	rows, err := s.db.QueryContext(ctx, querySQL, args...)
 	if err != nil {
 		return nil, err
