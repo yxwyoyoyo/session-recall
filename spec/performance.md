@@ -109,6 +109,7 @@ paths in performance reports.
 
 ## Current optimization priority
 
-The OpenCode discovery query currently aggregates message content before Go
-compares session timestamps with the existing index. Move the timestamp filter
-into SQL so unchanged sessions do not pay content aggregation cost.
+The OpenCode discovery query already excludes unchanged sessions before
+message content aggregation: discovered stamps are inlined into the query as a
+VALUES table expression and gate the message join in SQL, so unchanged
+sessions only pay the session scan. The provider database is never written to.
