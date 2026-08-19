@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -46,11 +47,35 @@ func (p *OpenCode) Discover(ctx context.Context, known map[string]int64) (Discov
 	}
 	defer db.Close()
 
-	rows, err := db.QueryContext(ctx, `
+	// Known stamps ride along as an inlined VALUES table expression, so the
+	// provider database stays strictly read-only: no temp tables, no writes.
+	// A dummy row keeps the query shape identical when nothing is known.
+	var sb strings.Builder
+	sb.WriteString("WITH known(id, stamp) AS (VALUES ")
+	ids := make([]string, 0, len(known))
+	for id := range known {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	if len(ids) == 0 {
+		sb.WriteString(`('__none__', -1)`)
+	}
+	for i, id := range ids {
+		if i > 0 {
+			sb.WriteString(",")
+		}
+		fmt.Fprintf(&sb, "('%s', %d)", strings.ReplaceAll(id, "'", "''"), known[id])
+	}
+	sb.WriteString(")")
+	// Unchanged sessions keep their last indexed content: gating the message
+	// join on the known stamp skips content aggregation for them in SQL.
+	rows, err := db.QueryContext(ctx, sb.String()+`
 		SELECT s.id, s.directory, s.title, s.time_updated,
 		       COALESCE(group_concat(json_extract(p.data, '$.text'), char(10)), '')
 		FROM session s
+		LEFT JOIN known k ON k.id = s.id
 		LEFT JOIN message m ON m.session_id = s.id
+		  AND (k.id IS NULL OR k.stamp != s.time_updated)
 		LEFT JOIN part p ON p.message_id = m.id
 		  AND json_extract(p.data, '$.type') = 'text'
 		  AND json_extract(m.data, '$.role') = 'user'
