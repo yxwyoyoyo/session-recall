@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/charmbracelet/bubbles/textinput"
+	"github.com/charmbracelet/x/ansi"
 
 	"github.com/yxwyoyoyo/session-recall/internal/session"
 )
@@ -45,7 +46,7 @@ func TestTruncateExactWidthUntouched(t *testing.T) {
 	if got := truncate("\x1b[2m1234567890\x1b[0m", 10); got != "\x1b[2m1234567890\x1b[0m" {
 		t.Fatalf("styled line of exactly width was modified: %q", got)
 	}
-	if got := truncate("12345678901", 10); got != "123456789…" {
+	if got := truncate("12345678901", 10); got != "123456789…\x1b[0m" {
 		t.Fatalf("line over width not truncated correctly: %q", got)
 	}
 }
@@ -93,21 +94,97 @@ func TestTruncateHandlesNestedESCAndSelectors(t *testing.T) {
 	}
 }
 
-func TestVisibleRunes(t *testing.T) {
+func TestHighlight(t *testing.T) {
+	const open, close = "\x1b[1;33m", "\x1b[0m"
 	cases := []struct {
-		text string
-		want int
+		text, query, want string
 	}{
-		{"hello", 5},
-		{"\x1b[36mx\x1b[0m", 1},
-		{"\x1b[2K\x1b[94mabc\x1b[0m", 3},
-		{"\x1b]8;;https://example.com\x1b\\hi \x1b]0;t\x07", 3},
-		{"→ ", 2},
+		{"hello world", "world", "hello " + open + "world" + close},
+		{"Hello World", "hello", open + "Hello" + close + " World"},
+		{"调试 picker 泄漏", "picker", "调试 " + open + "picker" + close + " 泄漏"},
+		{"调试 picker 泄漏", "调试", open + "调试" + close + " picker 泄漏"},
+		{"abab", "ab", open + "ab" + close + open + "ab" + close},
+		{"no match", "zz", "no match"},
+		{"plain", "", "plain"},
+		{"调试调试", "调试", open + "调试" + close + open + "调试" + close},
 	}
 	for _, c := range cases {
-		if got := visibleRunes(c.text); got != c.want {
-			t.Fatalf("visibleRunes(%q) = %d, want %d", c.text, got, c.want)
+		got := highlight(c.text, strings.Fields(strings.ToLower(c.query)), open, close)
+		if got != c.want {
+			t.Fatalf("highlight(%q, %q) = %q, want %q", c.text, c.query, got, c.want)
 		}
+	}
+}
+
+func TestHighlightEarliestTokenFirst(t *testing.T) {
+	const open, close = "\x1b[1;33m", "\x1b[0m"
+	got := highlight("a X b x c", []string{"x", "X"}, open, close)
+	want := "a " + open + "X" + close + " b " + open + "x" + close + " c"
+	if got != want {
+		t.Fatalf("highlight = %q, want %q", got, want)
+	}
+}
+
+func TestTruncateRespectsCellWidth(t *testing.T) {
+	// Each CJK rune is 2 cells wide; the cut must not split them.
+	if got := truncate("调试代码测试内容", 6); got != "调试…\x1b[0m" {
+		t.Fatalf("wide-char truncation wrong: %q", got)
+	}
+	if got := truncate("调试代码测试内容", 8); got != "调试代…\x1b[0m" {
+		t.Fatalf("wide-char truncation wrong: %q", got)
+	}
+	if got := truncate("ab调试cd", 6); got != "ab调…\x1b[0m" {
+		t.Fatalf("mixed-width truncation wrong: %q", got)
+	}
+	if got := ansi.StringWidth(truncate("调试代码测试内容", 10)); got > 10 {
+		t.Fatalf("truncated line wider than budget: %d", got)
+	}
+}
+
+func TestViewCJKRightAlign(t *testing.T) {
+	now := time.Now()
+	results := []session.Match{{
+		Session: session.Session{
+			Provider:  "opencode",
+			Title:     "调试 picker ANSI 泄漏与右对齐",
+			Directory: "/workspace/session-recall",
+			UpdatedAt: now,
+		},
+	}}
+	picker := &Picker{input: textinput.New(), results: results, width: 100, height: 20}
+	for _, line := range strings.Split(picker.View(), "\n") {
+		if !strings.Contains(line, "\x1b[36mopencode\x1b[0m") {
+			continue
+		}
+		if got := ansi.StringWidth(line); got > 100 {
+			t.Fatalf("right-aligned row wider than terminal (%d cells): %q", got, line)
+		}
+	}
+}
+
+func TestViewHighlightQueryTerms(t *testing.T) {
+	now := time.Now()
+	input := textinput.New()
+	input.SetValue("picker")
+	results := []session.Match{{
+		Session: session.Session{
+			Provider:  "opencode",
+			Title:     "Fix the picker truncation bug",
+			Directory: "/workspace/session-recall",
+			UpdatedAt: now,
+		},
+		Snippet: "The picker rows handle [ANSI] leaks.",
+	}}
+	picker := &Picker{input: input, results: results, width: 100, height: 20, cursor: 0}
+	view := picker.View()
+	if !strings.Contains(view, "\x1b[1;33mpicker\x1b[0m") {
+		t.Fatalf("query term not highlighted in title: %q", view)
+	}
+	if !strings.Contains(view, "\x1b[0m\x1b[1;33mpicker\x1b[0m\x1b[2m") {
+		t.Fatalf("query term not highlighted in snippet: %q", view)
+	}
+	if strings.Contains(view, "[ANSI]") {
+		t.Fatalf("FTS bracket markers not stripped from snippet: %q", view)
 	}
 }
 
