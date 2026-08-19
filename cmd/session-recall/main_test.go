@@ -12,6 +12,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/yxwyoyoyo/session-recall/internal/config"
 	"github.com/yxwyoyoyo/session-recall/internal/index"
 	"github.com/yxwyoyoyo/session-recall/internal/provider"
 	"github.com/yxwyoyoyo/session-recall/internal/session"
@@ -164,6 +165,71 @@ func TestPiDiscoveryToSearchPipeline(t *testing.T) {
 	}
 }
 
+func TestIndexPathForUsesRcDatabaseOverride(t *testing.T) {
+	cache := t.TempDir()
+	home := t.TempDir()
+	path, err := indexPathFor(config.Config{Database: "~/dedicated/index.db"}, cache, home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := filepath.Join(home, "dedicated", "index.db")
+	if path != want {
+		t.Fatalf("path = %q, want %q", path, want)
+	}
+}
+
+func TestRunUsesRcDatabaseOverride(t *testing.T) {
+	home := t.TempDir()
+	dedicated := filepath.Join(home, "private", "index.db")
+	rcDir := filepath.Join(home, ".config", config.AppName)
+	if err := os.MkdirAll(rcDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	rc := filepath.Join(rcDir, "rc")
+	if err := os.WriteFile(rc, []byte("database = \""+dedicated+"\"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("SESSION_RECALL_RC", "")
+	t.Chdir(home)
+	var stdout, stderr bytes.Buffer
+	if err := run([]string{"doctor"}, &stdout, &stderr); err != nil {
+		t.Fatalf("run: %v\nstderr: %s", err, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "config\t"+rc+"\n") {
+		t.Fatalf("doctor output missing rc path:\n%s", stdout.String())
+	}
+	if !strings.Contains(stdout.String(), "index\t"+dedicated+"\n") {
+		t.Fatalf("doctor output missing dedicated index:\n%s", stdout.String())
+	}
+	if _, err := os.Stat(dedicated); err != nil {
+		t.Fatalf("dedicated database not created: %v", err)
+	}
+}
+
+func TestRunIgnoresMissingRcFile(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("SESSION_RECALL_RC", filepath.Join(home, "nonexistent", "rc"))
+	cache, err := os.UserCacheDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(home)
+	var stdout, stderr bytes.Buffer
+	if err := run([]string{"doctor"}, &stdout, &stderr); err != nil {
+		t.Fatalf("run: %v\nstderr: %s", err, stderr.String())
+	}
+	if strings.Contains(stdout.String(), "config\t") {
+		t.Fatalf("missing rc file should not print config line:\n%s", stdout.String())
+	}
+	if !strings.Contains(stdout.String(), "index\t"+filepath.Join(cache, config.AppName, "index.db")) {
+		t.Fatalf("default index path not used:\n%s", stdout.String())
+	}
+}
+
 func TestDoctorReportsDegradedProviderDiagnostics(t *testing.T) {
 	db, err := sql.Open("sqlite", ":memory:")
 	if err != nil {
@@ -181,7 +247,7 @@ func TestDoctorReportsDegradedProviderDiagnostics(t *testing.T) {
 		t.Fatal(err)
 	}
 	var output bytes.Buffer
-	if err := runDoctor(store, []provider.Provider{doctorProvider{revision: 3}}, "/cache/index.db", &output); err != nil {
+	if err := runDoctor(store, []provider.Provider{doctorProvider{revision: 3}}, "/cache/index.db", config.Config{}, "", &output); err != nil {
 		t.Fatal(err)
 	}
 	for _, want := range []string{
@@ -209,7 +275,7 @@ func TestDoctorReportsPendingParserRevision(t *testing.T) {
 		t.Fatal(err)
 	}
 	var output bytes.Buffer
-	if err := runDoctor(store, []provider.Provider{doctorProvider{revision: 3}}, "/cache/index.db", &output); err != nil {
+	if err := runDoctor(store, []provider.Provider{doctorProvider{revision: 3}}, "/cache/index.db", config.Config{}, "", &output); err != nil {
 		t.Fatal(err)
 	}
 	want := "test-provider\tavailable\t0 indexed\tparser=v3\trefresh=pending\tprevious_parser=v2"

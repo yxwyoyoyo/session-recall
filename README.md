@@ -144,6 +144,21 @@ Search uses SQLite FTS5 with Unicode tokenization and prefix matching. It
 matches session titles, directories, and user-prompt content. Results are
 ranked by textual relevance and then recency.
 
+### Configuration
+
+Optional TOML rc file at `~/.config/session-recall/rc` (override the path
+with `SESSION_RECALL_RC`):
+
+```toml
+# Use a dedicated index database (e.g. for experiments or per-project
+# isolation); defaults to $XDG_CACHE_HOME/session-recall/index.db.
+# Leading ~/ is expanded against your home directory.
+database = "~/session-recall-experiments/index.db"
+```
+
+Everything still works exactly as before without the file. `session-recall
+doctor` prints the active rc path and database location.
+
 ### Resume commands
 
 The provider adapters execute the installed harness directly:
