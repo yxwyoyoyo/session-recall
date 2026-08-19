@@ -4,14 +4,19 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/charmbracelet/bubbles/textinput"
+
+	"github.com/yxwyoyoyo/session-recall/internal/session"
 )
 
 func TestTruncateDoesNotLeakANSIState(t *testing.T) {
-	// A long directory forces truncation of a fully formatted row. The
-	// SGR state must be closed before the cut so dim/bold never bleeds into
-	// the following row's marker and provider column.
-	line := fmt.Sprintf("\x1b[36m%-9s\x1b[0m %s  \x1b[2m%s · %s\x1b[0m",
-		"opencode", "Title", strings.Repeat("a", 120), "2h")
+	// A long title forces truncation of a fully styled wide-mode row. The
+	// SGR state must be closed before the cut so dim/bold/color never
+	// bleeds into the following row's marker and provider column.
+	line := fmt.Sprintf("\x1b[1;33m→ \x1b[0m%s  \x1b[2m%s · \x1b[0m\x1b[94m%s\x1b[0m  \x1b[36m%s\x1b[0m",
+		strings.Repeat("T", 120), "2h", "~/Tools/session-recall", "opencode")
 	out := truncate(line, 60)
 	if !strings.HasSuffix(out, "\x1b[0m") {
 		t.Fatalf("truncated row does not close SGR state: %q", out)
@@ -85,5 +90,99 @@ func TestTruncateHandlesNestedESCAndSelectors(t *testing.T) {
 	}
 	if got := truncate(line, 100); got != line {
 		t.Fatalf("short nested-ESC line was modified: %q", got)
+	}
+}
+
+func TestVisibleRunes(t *testing.T) {
+	cases := []struct {
+		text string
+		want int
+	}{
+		{"hello", 5},
+		{"\x1b[36mx\x1b[0m", 1},
+		{"\x1b[2K\x1b[94mabc\x1b[0m", 3},
+		{"\x1b]8;;https://example.com\x1b\\hi \x1b]0;t\x07", 3},
+		{"→ ", 2},
+	}
+	for _, c := range cases {
+		if got := visibleRunes(c.text); got != c.want {
+			t.Fatalf("visibleRunes(%q) = %d, want %d", c.text, got, c.want)
+		}
+	}
+}
+
+func TestViewSnippetTopN(t *testing.T) {
+	results := make([]session.Match, 6)
+	for i := range results {
+		results[i] = session.Match{
+			Session: session.Session{
+				Provider:  "opencode",
+				ID:        fmt.Sprintf("id-%d", i),
+				Title:     fmt.Sprintf("Title %d", i),
+				Directory: "/tmp",
+				UpdatedAt: time.Now(),
+			},
+			Snippet: fmt.Sprintf("unique-snippet-%d", i),
+		}
+	}
+	picker := &Picker{input: textinput.New(), results: results, width: 120, height: 60, cursor: 5}
+	view := picker.View()
+	for i := 0; i < 3; i++ {
+		if !strings.Contains(view, fmt.Sprintf("unique-snippet-%d", i)) {
+			t.Fatalf("top snippet %d missing in view: %q", i, view)
+		}
+	}
+	if !strings.Contains(view, "unique-snippet-5") {
+		t.Fatalf("cursor row snippet missing in view: %q", view)
+	}
+	if got := strings.Count(view, "unique-snippet-"); got != 4 {
+		t.Fatalf("expected 4 snippets (top 3 + cursor), got %d", got)
+	}
+}
+
+func TestViewRowLayout(t *testing.T) {
+	now := time.Now()
+	results := []session.Match{
+		{
+			Session: session.Session{
+				Provider:  "opencode",
+				Title:     strings.Repeat("T", 120),
+				Directory: "/workspace/session-recall",
+				UpdatedAt: now,
+			},
+		},
+		{
+			Session: session.Session{
+				Provider:  "claude",
+				Title:     "Short Title",
+				Directory: "/workspace/claude",
+				UpdatedAt: now,
+			},
+		},
+	}
+	wide := &Picker{input: textinput.New(), results: results, width: 120, height: 60}
+	wview := wide.View()
+	if strings.Contains(wview, strings.Repeat("T", 120)) {
+		t.Fatalf("wide mode left long title untruncated")
+	}
+	for _, line := range strings.Split(wview, "\n") {
+		if strings.HasPrefix(line, "  Short Title") && !strings.HasSuffix(line, "\x1b[36mclaude\x1b[0m") {
+			t.Fatalf("wide mode row not right-aligned with provider at end: %q", line)
+		}
+	}
+
+	narrow := &Picker{input: textinput.New(), results: results, width: 60, height: 60}
+	nview := narrow.View()
+	if !strings.Contains(nview, "Short Title") {
+		t.Fatalf("narrow mode lost short title: %q", nview)
+	}
+	if !strings.Contains(nview, "  \x1b[2m") {
+		t.Fatalf("narrow mode missing indented meta line: %q", nview)
+	}
+	if !strings.Contains(nview, "/workspace/session-recall") {
+		t.Fatalf("narrow mode lost directory: %q", nview)
+	}
+	if !strings.Contains(nview, "\x1b[36mopencode\x1b[0m") {
+		t.Fatalf("narrow mode lost provider: %q", nview)
 	}
 }

@@ -95,11 +95,16 @@ func (p *Picker) View() string {
 	out.WriteString(p.input.View())
 	out.WriteString("\n\n")
 	visible := max(1, p.height-6)
+	narrow := p.width < wideWidth
+	if narrow {
+		visible = max(1, visible/2)
+	}
 	start := 0
 	if p.cursor >= visible {
 		start = p.cursor - visible + 1
 	}
 	end := min(len(p.results), start+visible)
+	snippetTop := min(snippetTopN, visible/3)
 	for i := start; i < end; i++ {
 		item := p.results[i]
 		marker := "  "
@@ -107,10 +112,20 @@ func (p *Picker) View() string {
 			marker = "\x1b[1;33m→ \x1b[0m"
 		}
 		age := index.FormatAge(item.UpdatedAt, time.Now())
-		line := fmt.Sprintf("%s\x1b[36m%-9s\x1b[0m %s  \x1b[2m%s · %s\x1b[0m", marker, item.Provider, item.Title, compactHome(item.Directory), age)
-		out.WriteString(truncate(line, p.width))
+		meta := fmt.Sprintf("\x1b[2m%s · \x1b[0m\x1b[94m%s\x1b[0m  \x1b[36m%s\x1b[0m",
+			age, compactHome(item.Directory), item.Provider)
+		title := item.Title
+		if narrow {
+			out.WriteString(truncate(marker+title, p.width))
+			out.WriteByte('\n')
+			out.WriteString(truncate("  "+meta, p.width))
+		} else {
+			title = truncate(title, max(4, p.width-visibleRunes(meta)-visibleRunes(marker)))
+			pad := max(0, p.width-visibleRunes(marker+title)-visibleRunes(meta))
+			out.WriteString(marker + title + strings.Repeat(" ", pad) + meta)
+		}
 		out.WriteByte('\n')
-		if i == p.cursor && item.Snippet != "" {
+		if (i < snippetTop || i == p.cursor) && item.Snippet != "" {
 			snippet := strings.ReplaceAll(item.Snippet, "[", "\x1b[1;33m")
 			snippet = strings.ReplaceAll(snippet, "]", "\x1b[0m\x1b[2m")
 			out.WriteString(truncate("    \x1b[2m"+strings.Join(strings.Fields(snippet), " ")+"\x1b[0m", p.width))
@@ -135,6 +150,11 @@ func compactHome(path string) string {
 var homeDir = func() string { return "" }
 
 func SetHome(path string) { homeDir = func() string { return path } }
+
+const (
+	wideWidth   = 80 // single-line right-aligned rows above this width
+	snippetTopN = 3  // leading results whose snippet is always shown
+)
 
 func truncate(text string, width int) string {
 	if width <= 4 {
@@ -176,6 +196,18 @@ func truncate(text string, width int) string {
 		visible++
 	}
 	return text // unreachable: fits is false, so a cut is guaranteed
+}
+
+// visibleRunes counts display runes in text; escape sequences cost nothing.
+func visibleRunes(text string) int {
+	scanner := ansiScanner{}
+	count := 0
+	for _, r := range text {
+		if scanner.visible(r) {
+			count++
+		}
+	}
+	return count
 }
 
 // ansiScanner classifies runes as display content or escape-sequence bytes.
