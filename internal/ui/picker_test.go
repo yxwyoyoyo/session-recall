@@ -243,8 +243,13 @@ func TestViewRowLayout(t *testing.T) {
 		t.Fatalf("wide mode left long title untruncated")
 	}
 	for _, line := range strings.Split(wview, "\n") {
-		if strings.HasPrefix(line, "  Short Title") && !strings.HasSuffix(line, "\x1b[36mclaude\x1b[0m") {
-			t.Fatalf("wide mode row not right-aligned with provider at end: %q", line)
+		if strings.Contains(line, "\x1b[36m") {
+			if !strings.HasSuffix(line, "\x1b[36m   claude\x1b[0m") && !strings.HasSuffix(line, "\x1b[36m opencode\x1b[0m") {
+				t.Fatalf("wide mode row not right-aligned with provider column: %q", line)
+			}
+			if got := ansi.StringWidth(line); got != 120 {
+				t.Fatalf("wide mode row width %d, want 120: %q", got, line)
+			}
 		}
 	}
 
@@ -259,7 +264,7 @@ func TestViewRowLayout(t *testing.T) {
 	if !strings.Contains(nview, "/workspace/session-recall") {
 		t.Fatalf("narrow mode lost directory: %q", nview)
 	}
-	if !strings.Contains(nview, "\x1b[36mopencode\x1b[0m") {
+	if !strings.Contains(nview, "\x1b[36m opencode\x1b[0m") {
 		t.Fatalf("narrow mode lost provider: %q", nview)
 	}
 }

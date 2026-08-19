@@ -114,19 +114,21 @@ func (p *Picker) View() string {
 			marker = "\x1b[1;33m→ \x1b[0m"
 		}
 		age := index.FormatAge(item.UpdatedAt, time.Now())
-		dir := highlight(compactHome(item.Directory), tokens, "\x1b[0m\x1b[1;33m", "\x1b[0m\x1b[94m")
-		meta := fmt.Sprintf("\x1b[2m%s · \x1b[0m\x1b[94m%s\x1b[0m  \x1b[36m%s\x1b[0m",
-			age, dir, item.Provider)
+		dir := highlight(compactHome(item.Directory), tokens, "\x1b[0m\x1b[1;33m", "\x1b[0m\x1b[2m")
+		meta := fmt.Sprintf("\x1b[2m%s · %s\x1b[0m", age, dir)
+		providerCol := fmt.Sprintf("\x1b[36m%9s\x1b[0m", item.Provider)
 		title := highlight(item.Title, tokens, "\x1b[1;33m", "\x1b[0m")
 		if narrow {
 			out.WriteString(truncate(marker+title, p.width))
 			out.WriteByte('\n')
-			out.WriteString(truncate("  "+meta, p.width))
+			metaWidth := ansi.StringWidth(meta)
+			pad := max(0, p.width-2-metaWidth-9)
+			out.WriteString(truncate("  "+meta+strings.Repeat(" ", pad)+providerCol, p.width))
 		} else {
 			metaWidth := ansi.StringWidth(meta)
-			title = truncate(title, max(4, p.width-metaWidth-2))
-			pad := max(0, p.width-2-ansi.StringWidth(title)-metaWidth)
-			out.WriteString(marker + title + strings.Repeat(" ", pad) + meta)
+			title = truncate(title, max(4, p.width-metaWidth-13))
+			pad := max(0, p.width-2-ansi.StringWidth(title)-2-metaWidth-9)
+			out.WriteString(marker + title + "  " + meta + strings.Repeat(" ", pad) + providerCol)
 		}
 		out.WriteByte('\n')
 		if (i < snippetTop || i == p.cursor) && item.Snippet != "" {
