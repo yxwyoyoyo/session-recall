@@ -329,7 +329,7 @@ func (s *Store) Search(ctx context.Context, query string, filters Filters) ([]se
 	// 229.7 ms with 500 matching tokens per document.
 	querySQL := `
 		SELECT s.provider, s.id, s.title, s.directory, s.updated_at, s.source,
-		       snippet(session_fts, 4, '[', ']', ' … ', 18), bm25(session_fts)
+		       snippet(session_fts, 4, '', '', ' … ', 18), bm25(session_fts)
 		FROM session_fts
 		JOIN sessions s ON s.provider = session_fts.provider AND s.id = session_fts.session_id
 		WHERE ` + strings.Join(conditions, " AND ") + `
@@ -343,21 +343,18 @@ func (s *Store) Search(ctx context.Context, query string, filters Filters) ([]se
 	if err != nil {
 		return nil, err
 	}
-	// FTS brackets mark only the matched column; the content window can
-	// still lack the term when the match landed in the title or directory.
+	// The content window can lack the term when the match landed in the title
+	// or directory. FTS highlight markers are deliberately empty because the
+	// UI highlights query terms itself; this also preserves literal brackets
+	// and other punctuation in snippets returned through the JSON interface.
 	// Fall back so every snippet displays where the row matched, without
-	// trusting bracket presence (literal '[' in content would fake it).
+	// relying on marker presence.
 	// Tokens are derived with fallbackToken, mirroring how FTS5's unicode61
 	// tokenizer splits the query ("foo/bar" and "foo-bar" both become the
 	// terms foo and bar). Note the trade-off: a content window containing a
-	// query token (unbracketed, match actually in title/directory) counts as
+	// query token (match actually in title/directory) counts as
 	// a hit and suppresses the fallback, keeping a still-relevant window.
 	tokens := FallbackTokens(query)
-	// Strip the FTS markers once so content windows and fallback text (plain
-	// titles or directories, which may contain literal '[') display alike.
-	for i := range matches {
-		matches[i].Snippet = StripBrackets(matches[i].Snippet)
-	}
 	for i := range matches {
 		if containsAny(matches[i].Snippet, tokens) {
 			continue
@@ -403,12 +400,6 @@ func FoldDiacritics(text string) string {
 		}
 		return r
 	}, nf)
-}
-
-// StripBrackets removes the snippet context markers emitted by snippet().
-// Exported so the UI can display snippets without duplicating this.
-func StripBrackets(text string) string {
-	return strings.NewReplacer("[", "", "]", "").Replace(text)
 }
 
 func (s *Store) recent(ctx context.Context, filters Filters) ([]session.Match, error) {

@@ -235,7 +235,7 @@ func TestViewSnippetOnlyForCursor(t *testing.T) {
 			t.Fatalf("snippet %d shown for a non-cursor row: %q", i, view)
 		}
 	}
-	if !strings.Contains(view, "opencode \x1b[0m\n    \x1b[38;5;249munique-snippet-5\x1b[0m\n\n\x1b[2m↑↓") {
+	if !strings.Contains(view, "\n    \x1b[38;5;249munique-snippet-5\x1b[0m\n\n\x1b[2m↑↓") {
 		t.Fatalf("cursor content not indented under its row: %q", view)
 	}
 }
@@ -286,7 +286,7 @@ func TestViewRowLayout(t *testing.T) {
 		t.Fatalf("provider column starts at %d, want 111 (width-9)", slotStart)
 	}
 
-	compact := &Picker{input: textinput.New(), results: results, width: 60, height: 60}
+	compact := &Picker{input: textinput.New(), results: results, width: 60, height: 60, cursor: 1}
 	cview := compact.View()
 	if !strings.Contains(cview, "Short Title") {
 		t.Fatalf("compact width lost short title: %q", cview)
@@ -294,12 +294,55 @@ func TestViewRowLayout(t *testing.T) {
 	if !strings.Contains(cview, "/workspace/claude") {
 		t.Fatalf("compact width lost short row directory: %q", cview)
 	}
+	if strings.Contains(cview, "/workspace/claude · claude ·") {
+		t.Fatalf("medium selected metadata repeats provider: %q", cview)
+	}
+	if !strings.Contains(cview, "/workspace/claude · recent") {
+		t.Fatalf("medium selected metadata missing path or match source: %q", cview)
+	}
 	if !strings.Contains(cview, "T…") {
 		t.Fatalf("compact width should truncate the long title: %q", cview)
 	}
 	for _, line := range strings.Split(cview, "\n") {
 		if strings.Contains(line, "\x1b[36m") && ansi.StringWidth(line) > 60 {
 			t.Fatalf("compact width row wider than terminal (%d cells): %q", ansi.StringWidth(line), line)
+		}
+	}
+
+	narrow := &Picker{input: textinput.New(), results: results, width: 40, height: 60, cursor: 1}
+	nview := narrow.View()
+	if !strings.Contains(nview, "opencode · now · /workspace") {
+		t.Fatalf("narrow mode did not move metadata to a second line: %q", nview)
+	}
+	if !strings.Contains(nview, "claude · recent · /workspace/claude") {
+		t.Fatalf("selected narrow row missing full context: %q", nview)
+	}
+	for _, line := range strings.Split(nview, "\n") {
+		if got := ansi.StringWidth(line); got > 40 {
+			t.Fatalf("narrow row wider than terminal (%d cells): %q", got, line)
+		}
+	}
+}
+
+func TestViewShowsResultPositionAndSelectedState(t *testing.T) {
+	results := []session.Match{
+		{Session: session.Session{Provider: "codex", Title: "First", Directory: "/one", UpdatedAt: time.Now()}},
+		{Session: session.Session{Provider: "claude", Title: "Second", Directory: "/two", UpdatedAt: time.Now()}},
+	}
+	picker := &Picker{input: textinput.New(), results: results, width: 80, height: 20, cursor: 1}
+	view := picker.View()
+	if !strings.Contains(view, "\x1b[2m2 / 2\x1b[0m") {
+		t.Fatalf("result position missing: %q", view)
+	}
+	if !strings.Contains(view, "\x1b[7m\x1b[1;33m→") {
+		t.Fatalf("selected row lacks adaptive reverse-video state: %q", view)
+	}
+}
+
+func TestTruncateVeryNarrowWidth(t *testing.T) {
+	for _, width := range []int{1, 2, 3, 4} {
+		if got := ansi.StringWidth(truncate("abcdefgh", width)); got > width {
+			t.Fatalf("truncate width %d produced %d cells", width, got)
 		}
 	}
 }

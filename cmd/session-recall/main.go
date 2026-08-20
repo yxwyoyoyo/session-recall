@@ -47,6 +47,17 @@ func main() {
 }
 
 func run(args []string, stdout, stderr io.Writer) error {
+	if len(args) > 0 {
+		switch args[0] {
+		case "version", "--version", "-v":
+			fmt.Fprintln(stdout, version)
+			return nil
+		case "help", "--help", "-h":
+			printHelp(stdout)
+			return nil
+		}
+	}
+
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return err
@@ -91,12 +102,6 @@ func run(args []string, stdout, stderr io.Writer) error {
 			return runIndex(args[1:], store, providers, stdout, stderr)
 		case "doctor":
 			return runDoctor(store, providers, indexPath, cfg, rcPathFor(home), stdout)
-		case "version", "--version", "-v":
-			fmt.Fprintln(stdout, version)
-			return nil
-		case "help", "--help", "-h":
-			printHelp(stdout)
-			return nil
 		}
 	}
 
@@ -164,6 +169,17 @@ func indexPathFor(cfg config.Config, cache, home string) (string, error) {
 	if cfg.Database != "" {
 		path := config.ExpandHome(cfg.Database, home)
 		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+			return "", err
+		}
+		file, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE, 0o600)
+		if err != nil {
+			return "", err
+		}
+		if err := file.Chmod(0o600); err != nil {
+			file.Close()
+			return "", err
+		}
+		if err := file.Close(); err != nil {
 			return "", err
 		}
 		return path, nil

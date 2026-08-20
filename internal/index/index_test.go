@@ -106,6 +106,28 @@ func TestSnippetIgnoresLiteralBrackets(t *testing.T) {
 	}
 }
 
+func TestContentSnippetPreservesLiteralBrackets(t *testing.T) {
+	store := testStore(t)
+	item := session.Session{
+		Provider: "codex", ID: "brackets", Title: "Inspect output", Directory: "/repo",
+		UpdatedAt: time.Unix(20, 0), Content: "check items[0] beside the [INFO] marker",
+		Source: "brackets.jsonl", Stamp: 1,
+	}
+	if err := store.Upsert(context.Background(), []session.Session{item}); err != nil {
+		t.Fatal(err)
+	}
+	matches, err := store.Search(context.Background(), "items", Filters{Limit: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(matches) != 1 {
+		t.Fatalf("got %d matches, want 1", len(matches))
+	}
+	if !strings.Contains(matches[0].Snippet, "items[0]") || !strings.Contains(matches[0].Snippet, "[INFO]") {
+		t.Fatalf("literal brackets were not preserved: %q", matches[0].Snippet)
+	}
+}
+
 func TestSnippetFallsBackPerFtsToken(t *testing.T) {
 	store := testStore(t)
 	items := []session.Session{

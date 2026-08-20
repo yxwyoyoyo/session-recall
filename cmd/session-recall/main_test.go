@@ -176,6 +176,62 @@ func TestIndexPathForUsesRcDatabaseOverride(t *testing.T) {
 	if path != want {
 		t.Fatalf("path = %q, want %q", path, want)
 	}
+	if runtime.GOOS != "windows" {
+		info, err := os.Stat(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := info.Mode().Perm(); got != 0o600 {
+			t.Fatalf("database mode = %o, want 600", got)
+		}
+	}
+}
+
+func TestIndexPathForTightensExistingDatabasePermissions(t *testing.T) {
+	home := t.TempDir()
+	dir := filepath.Join(home, "shared")
+	if err := os.Mkdir(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, "index.db")
+	if err := os.WriteFile(path, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := indexPathFor(config.Config{Database: path}, t.TempDir(), home); err != nil {
+		t.Fatal(err)
+	}
+	if runtime.GOOS != "windows" {
+		info, err := os.Stat(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := info.Mode().Perm(); got != 0o600 {
+			t.Fatalf("database mode = %o, want 600", got)
+		}
+	}
+}
+
+func TestHelpAndVersionIgnoreMalformedRc(t *testing.T) {
+	rc := filepath.Join(t.TempDir(), "rc")
+	if err := os.WriteFile(rc, []byte("database =\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("SESSION_RECALL_RC", rc)
+	for _, tc := range []struct {
+		args []string
+		want string
+	}{
+		{args: []string{"--version"}, want: version + "\n"},
+		{args: []string{"--help"}, want: "Usage:"},
+	} {
+		var stdout, stderr bytes.Buffer
+		if err := run(tc.args, &stdout, &stderr); err != nil {
+			t.Fatalf("run(%v): %v", tc.args, err)
+		}
+		if !strings.Contains(stdout.String(), tc.want) {
+			t.Fatalf("run(%v) output = %q, want %q", tc.args, stdout.String(), tc.want)
+		}
+	}
 }
 
 func TestRunUsesRcDatabaseOverride(t *testing.T) {
