@@ -5,6 +5,9 @@ import (
 	"fmt"
 	"strings"
 	"time"
+	"unicode"
+
+	"golang.org/x/text/unicode/norm"
 
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
@@ -96,46 +99,40 @@ func (p *Picker) View() string {
 	out.WriteString(p.input.View())
 	out.WriteString("\n\n")
 	visible := max(1, p.height-6)
-	narrow := p.width < wideWidth
-	if narrow {
-		visible = max(1, visible/2)
-	}
 	start := 0
 	if p.cursor >= visible {
 		start = p.cursor - visible + 1
 	}
 	end := min(len(p.results), start+visible)
-	snippetTop := min(snippetTopN, visible/3)
-	tokens := strings.Fields(strings.ToLower(p.input.Value()))
+	tokens := index.FallbackTokens(p.input.Value())
 	for i := start; i < end; i++ {
 		item := p.results[i]
-		marker := "  "
+		marker := "   "
 		if i == p.cursor {
-			marker = "\x1b[1;33m→ \x1b[0m"
+			marker = "\x1b[1;33m→  \x1b[0m"
 		}
 		age := index.FormatAge(item.UpdatedAt, time.Now())
 		dir := highlight(compactHome(item.Directory), tokens, "\x1b[0m\x1b[1;33m", "\x1b[0m\x1b[2m")
-		meta := fmt.Sprintf("\x1b[2m%s · %s\x1b[0m", age, dir)
-		providerCol := fmt.Sprintf("\x1b[36m%9s\x1b[0m", item.Provider)
 		title := highlight(item.Title, tokens, "\x1b[1;33m", "\x1b[0m")
-		if narrow {
-			out.WriteString(truncate(marker+title, p.width))
-			out.WriteByte('\n')
-			metaWidth := ansi.StringWidth(meta)
-			pad := max(0, p.width-2-metaWidth-9)
-			out.WriteString(truncate("  "+meta+strings.Repeat(" ", pad)+providerCol, p.width))
-		} else {
-			metaWidth := ansi.StringWidth(meta)
-			title = truncate(title, max(4, p.width-metaWidth-13))
-			pad := max(0, p.width-2-ansi.StringWidth(title)-2-metaWidth-9)
-			out.WriteString(marker + title + "  " + meta + strings.Repeat(" ", pad) + providerCol)
+		ageCol := "\x1b[2m" + age + "\x1b[0m"
+		provider := fmt.Sprintf("\x1b[36m%-9s\x1b[0m", item.Provider)
+		ageW := ansi.StringWidth(ageCol)
+		// The title is the primary field: give it the full budget and let
+		// the directory take whatever remains.
+		title = truncate(title, max(4, p.width-15-ageW))
+		dirBudget := max(0, p.width-15-ageW-ansi.StringWidth(title))
+		dirText := truncate(dir, dirBudget)
+		if dirBudget <= 4 {
+			dirText = ""
 		}
+		dirCol := "\x1b[2m" + dirText + "\x1b[0m"
+		pad := max(1, p.width-3-ansi.StringWidth(title)-1-ageW-ansi.StringWidth(dirCol)-10)
+		out.WriteString(truncate(marker+title+" "+ageCol+strings.Repeat(" ", pad)+dirCol+" "+provider, p.width))
 		out.WriteByte('\n')
-		if (i < snippetTop || i == p.cursor) && item.Snippet != "" {
-			snippet := strings.NewReplacer("[", "", "]", "").Replace(item.Snippet)
-			snippet = strings.Join(strings.Fields(snippet), " ")
-			snippet = highlight(snippet, tokens, "\x1b[0m\x1b[1;33m", "\x1b[0m\x1b[2m")
-			out.WriteString(truncate("    \x1b[2m"+snippet+"\x1b[0m", p.width))
+		if i == p.cursor && item.Snippet != "" {
+			snippet := strings.Join(strings.Fields(item.Snippet), " ")
+			snippet = highlight(snippet, tokens, "\x1b[0m\x1b[1;33m", "\x1b[0m\x1b[38;5;249m")
+			out.WriteString(truncate("    \x1b[38;5;249m"+snippet+"\x1b[0m", p.width))
 			out.WriteByte('\n')
 		}
 	}
@@ -158,11 +155,6 @@ var homeDir = func() string { return "" }
 
 func SetHome(path string) { homeDir = func() string { return path } }
 
-const (
-	wideWidth   = 80 // single-line right-aligned rows above this width
-	snippetTopN = 3  // leading results whose snippet is always shown
-)
-
 func truncate(text string, width int) string {
 	if width <= 4 || ansi.StringWidth(text) <= width {
 		return text
@@ -170,16 +162,27 @@ func truncate(text string, width int) string {
 	return ansi.Truncate(text, width, "…") + "\x1b[0m"
 }
 
-// highlight wraps every case-insensitive occurrence of any token in text
-// with open/close styles. Overlapping matches are never double-wrapped.
+// highlight wraps every case-insensitive occurrence of any query token in
+// text with open/close styles. Matching is diacritic-insensitive like FTS
+// (tokens already arrive folded via index.FallbackTokens); the original
+// text keeps its accents. Overlapping matches are never double-wrapped.
 func highlight(text string, tokens []string, open, close string) string {
 	if len(tokens) == 0 || text == "" {
 		return text
 	}
-	lower := strings.ToLower(text)
+	orig := []rune(text)
+	folded, origIdx := foldIndices(orig)
+	var foldBuf strings.Builder
+	foldBuf.Grow(len(text))
+	pos := make([]int, len(folded))
+	for fi, r := range folded {
+		pos[fi] = foldBuf.Len()
+		foldBuf.WriteRune(unicode.ToLower(r))
+	}
+	flat := foldBuf.String()
 	matched := false
 	for _, tok := range tokens {
-		if tok != "" && strings.Contains(lower, tok) {
+		if tok != "" && strings.Contains(flat, tok) {
 			matched = true
 			break
 		}
@@ -187,29 +190,63 @@ func highlight(text string, tokens []string, open, close string) string {
 	if !matched {
 		return text
 	}
+	origOffs := make([]int, len(orig))
+	for i := 1; i < len(orig); i++ {
+		origOffs[i] = origOffs[i-1] + len(string(orig[i-1]))
+	}
+	// byteToOrig maps each byte offset in flat to the byte offset in text.
+	// Positions are captured from the builder before each rune is written,
+	// so lowercasing that changes byte length (e.g. ẞ -> ß) stays exact.
+	byteToOrig := make([]int, len(flat)+1)
+	for i := range byteToOrig {
+		byteToOrig[i] = -1
+	}
+	for fi := range folded {
+		byteToOrig[pos[fi]] = origOffs[origIdx[fi]]
+	}
+	byteToOrig[len(flat)] = len(text)
 	var out strings.Builder
 	out.Grow(len(text) + 16)
 	i := 0
-	for i < len(lower) {
-		best, bestTok := -1, ""
+	for i < len(flat) {
+		best, bestEnd := -1, 0
 		for _, tok := range tokens {
 			if tok == "" {
 				continue
 			}
-			if idx := strings.Index(lower[i:], tok); idx >= 0 && (best == -1 || idx < best) {
-				best, bestTok = idx, tok
+			if idx := strings.Index(flat[i:], tok); idx >= 0 && (best == -1 || idx < best) {
+				best, bestEnd = idx, i+idx+len(tok)
 			}
 		}
 		if best == -1 {
-			out.WriteString(text[i:])
+			out.WriteString(text[byteToOrig[i]:])
 			break
 		}
-		out.WriteString(text[i : i+best])
-		end := i + best + len(bestTok)
-		out.WriteString(open)
-		out.WriteString(text[i+best : end])
-		out.WriteString(close)
-		i = end
+		out.WriteString(text[byteToOrig[i]:byteToOrig[i+best]])
+		if s := text[byteToOrig[i+best]:byteToOrig[bestEnd]]; s != "" {
+			out.WriteString(open)
+			out.WriteString(s)
+			out.WriteString(close)
+		}
+		i = bestEnd
 	}
 	return out.String()
+}
+
+// foldIndices returns the diacritic-folded forms of the runes in rs (NFD
+// with combining marks dropped, semantics shared with index.FoldDiacritics)
+// and, for each folded rune, the index of its original rune in rs.
+func foldIndices(rs []rune) (folded []rune, origIdx []int) {
+	folded = make([]rune, 0, len(rs))
+	origIdx = make([]int, 0, len(rs))
+	for i, r := range rs {
+		for _, d := range norm.NFD.String(string(r)) {
+			if unicode.Is(unicode.Mn, d) {
+				continue
+			}
+			folded = append(folded, d)
+			origIdx = append(origIdx, i)
+		}
+	}
+	return folded, origIdx
 }

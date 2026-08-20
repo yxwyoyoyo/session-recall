@@ -51,6 +51,185 @@ func TestSearchesContentAndFiltersProvider(t *testing.T) {
 	}
 }
 
+func TestSnippetShowsTitleAndDirectoryMatches(t *testing.T) {
+	store := testStore(t)
+	items := []session.Session{
+		{Provider: "codex", ID: "t1", Title: "Optimize pane layout", Directory: "/repo", UpdatedAt: time.Unix(20, 0), Content: "unrelated filler", Source: "t1.jsonl", Stamp: 1},
+		{Provider: "codex", ID: "t2", Title: "Other work", Directory: "/elsewhere", UpdatedAt: time.Unix(10, 0), Content: "unrelated filler", Source: "t2.jsonl", Stamp: 1},
+	}
+	if err := store.Upsert(context.Background(), items); err != nil {
+		t.Fatal(err)
+	}
+	titleMatches, err := store.Search(context.Background(), "pane", Filters{Limit: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(titleMatches) != 1 || !strings.Contains(strings.ToLower(titleMatches[0].Snippet), "pane") {
+		t.Fatalf("title match not surfaced in snippet: %#v", titleMatches)
+	}
+	if titleMatches[0].Snippet != titleMatches[0].Title {
+		t.Fatalf("title-only match should surface the title as snippet: %q", titleMatches[0].Snippet)
+	}
+	dirMatches, err := store.Search(context.Background(), "elsewhere", Filters{Limit: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(dirMatches) != 1 || !strings.Contains(strings.ToLower(dirMatches[0].Snippet), "elsewhere") {
+		t.Fatalf("directory match not surfaced in snippet: %#v", dirMatches)
+	}
+}
+
+func TestSnippetIgnoresLiteralBrackets(t *testing.T) {
+	store := testStore(t)
+	items := []session.Session{
+		{Provider: "codex", ID: "b1", Title: "Deploy the dashboard", Directory: "/repos/session-recall", UpdatedAt: time.Unix(20, 0), Content: "[INFO] starting build step now", Source: "b1.jsonl", Stamp: 1},
+		{Provider: "codex", ID: "b2", Title: "Deploy [skip ci] fast", Directory: "/repos/session-recall", UpdatedAt: time.Unix(10, 0), Content: "unrelated words here only", Source: "b2.jsonl", Stamp: 1},
+	}
+	if err := store.Upsert(context.Background(), items); err != nil {
+		t.Fatal(err)
+	}
+	// "session-recall" matches only the directory column of both rows.
+	matches, err := store.Search(context.Background(), "session-recall", Filters{Limit: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(matches) != 2 {
+		t.Fatalf("got %d matches, want 2", len(matches))
+	}
+	for _, m := range matches {
+		if !strings.Contains(strings.ToLower(m.Snippet), "session-recall") {
+			t.Fatalf("literal brackets suppressed the directory fallback: %q", m.Snippet)
+		}
+		if m.Snippet == m.Title {
+			t.Fatalf("title with literal brackets picked over matching directory: %q", m.Snippet)
+		}
+	}
+}
+
+func TestSnippetFallsBackPerFtsToken(t *testing.T) {
+	store := testStore(t)
+	items := []session.Session{
+		{Provider: "codex", ID: "f1", Title: "foo bar queue", Directory: "/repo",
+			UpdatedAt: time.Unix(20, 0), Content: strings.Repeat("filler ", 40), Source: "f1.jsonl", Stamp: 1},
+	}
+	if err := store.Upsert(context.Background(), items); err != nil {
+		t.Fatal(err)
+	}
+	// FTS tokenizes "foo/bar" into foo AND bar, so the row matches via the
+	// title while the content window shows plain filler. Fallback tokens must
+	// come from the same tokenizer, or nothing matches and the snippet stays
+	// unusable.
+	matches, err := store.Search(context.Background(), "foo/bar", Filters{Limit: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(matches) != 1 {
+		t.Fatalf("got %d matches, want 1", len(matches))
+	}
+	if matches[0].Snippet != "foo bar queue" {
+		t.Fatalf("fallback did not surface the title for token-split query: %q", matches[0].Snippet)
+	}
+}
+
+func TestSnippetHyphenatedQueryFallsBackPerSplitToken(t *testing.T) {
+	store := testStore(t)
+	items := []session.Session{
+		{Provider: "codex", ID: "h1", Title: "session recall utils", Directory: "/work/misc",
+			UpdatedAt: time.Unix(20, 0), Content: strings.Repeat("filler ", 40), Source: "h1.jsonl", Stamp: 1},
+	}
+	if err := store.Upsert(context.Background(), items); err != nil {
+		t.Fatal(err)
+	}
+	// unicode61 splits "session-recall" into session + recall, and the phrase
+	// query matches the space-separated title. The fallback tokens must split
+	// the same way for the title to surface.
+	matches, err := store.Search(context.Background(), "session-recall", Filters{Limit: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(matches) != 1 {
+		t.Fatalf("got %d matches, want 1", len(matches))
+	}
+	if matches[0].Snippet != "session recall utils" {
+		t.Fatalf("fallback did not surface the title for hyphenated query: %q", matches[0].Snippet)
+	}
+}
+
+func TestSnippetWindowWithSubstringStays(t *testing.T) {
+	store := testStore(t)
+	items := []session.Session{
+		{Provider: "codex", ID: "w1", Title: "fix release", Directory: "/work/misc",
+			UpdatedAt: time.Unix(20, 0), Content: "affix and padding " + strings.Repeat("filler ", 30), Source: "w1.jsonl", Stamp: 1},
+	}
+	if err := store.Upsert(context.Background(), items); err != nil {
+		t.Fatal(err)
+	}
+	// The row matches "fix" via the title; the content window shows only
+	// "affix" (which FTS does not match, so no bracket). Because the window
+	// still contains the term, the fallback intentionally keeps it.
+	matches, err := store.Search(context.Background(), "fix", Filters{Limit: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(matches) != 1 {
+		t.Fatalf("got %d matches, want 1", len(matches))
+	}
+	if matches[0].Snippet == matches[0].Title {
+		t.Fatalf("window with a term substring should suppress the fallback: %q", matches[0].Snippet)
+	}
+	if !strings.Contains(matches[0].Snippet, "affix") {
+		t.Fatalf("window should contain affix: %q", matches[0].Snippet)
+	}
+}
+
+func TestSearchFiltersCWD(t *testing.T) {
+	store := testStore(t)
+	items := []session.Session{
+		{Provider: "codex", ID: "d1", Title: "pane reattach", Directory: "/work/a",
+			UpdatedAt: time.Unix(30, 0), Content: "pane reattach", Source: "d1.jsonl", Stamp: 1},
+		{Provider: "claude", ID: "d2", Title: "pane reattach", Directory: "/work/b",
+			UpdatedAt: time.Unix(20, 0), Content: "pane reattach", Source: "d2.jsonl", Stamp: 1},
+		{Provider: "codex", ID: "d3", Title: "pane reattach", Directory: "/work/a/sub",
+			UpdatedAt: time.Unix(10, 0), Content: "pane reattach", Source: "d3.jsonl", Stamp: 1},
+	}
+	if err := store.Upsert(context.Background(), items); err != nil {
+		t.Fatal(err)
+	}
+	matches, err := store.Search(context.Background(), "pane", Filters{Provider: "codex", CWD: "/work/a", Limit: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(matches) != 1 {
+		t.Fatalf("got %d matches, want 1", len(matches))
+	}
+	if matches[0].ID != "d1" || matches[0].Provider != "codex" || matches[0].Directory != "/work/a" {
+		t.Fatalf("filter mismatch: %#v", matches[0])
+	}
+}
+
+func TestSnippetFallbackFoldsDiacritics(t *testing.T) {
+	store := testStore(t)
+	items := []session.Session{
+		{Provider: "codex", ID: "a1", Title: "cafe ordering", Directory: "/work/misc",
+			UpdatedAt: time.Unix(20, 0), Content: strings.Repeat("filler ", 40), Source: "a1.jsonl", Stamp: 1},
+	}
+	if err := store.Upsert(context.Background(), items); err != nil {
+		t.Fatal(err)
+	}
+	// unicode61 folds diacritics: the "café" query matches the title, and the
+	// fallback must fold the same way to surface it.
+	matches, err := store.Search(context.Background(), "café", Filters{Limit: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(matches) != 1 {
+		t.Fatalf("got %d matches, want 1", len(matches))
+	}
+	if matches[0].Snippet != "cafe ordering" {
+		t.Fatalf("fallback did not surface the title for accented query: %q", matches[0].Snippet)
+	}
+}
+
 func TestSearchOrdersByRankThenRecencyAndLimits(t *testing.T) {
 	store := testStore(t)
 	items := make([]session.Session, 60)
