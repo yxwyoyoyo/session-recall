@@ -16,8 +16,8 @@ func TestTruncateDoesNotLeakANSIState(t *testing.T) {
 	// A long title forces truncation of a fully styled wide-mode row. The
 	// SGR state must be closed before the cut so dim/bold/color never
 	// bleeds into the following row's marker and provider column.
-	line := fmt.Sprintf("\x1b[1;33m→ \x1b[0m%s  \x1b[2m%s · \x1b[0m\x1b[94m%s\x1b[0m  \x1b[36m%s\x1b[0m",
-		strings.Repeat("T", 120), "2h", "~/Tools/session-recall", "opencode")
+	line := fmt.Sprintf("\x1b[1;33m→  \x1b[0m%s \x1b[2m2h\x1b[0m                                         \x1b[2m%s\x1b[0m \x1b[36mopencode \x1b[0m",
+		strings.Repeat("T", 120), "~/Tools/session-recall")
 	out := truncate(line, 60)
 	if !strings.HasSuffix(out, "\x1b[0m") {
 		t.Fatalf("truncated row does not close SGR state: %q", out)
@@ -153,12 +153,38 @@ func TestViewCJKRightAlign(t *testing.T) {
 	}}
 	picker := &Picker{input: textinput.New(), results: results, width: 100, height: 20}
 	for _, line := range strings.Split(picker.View(), "\n") {
-		if !strings.Contains(line, "\x1b[36mopencode\x1b[0m") {
+		if !strings.Contains(line, "\x1b[36mopencode") {
 			continue
 		}
 		if got := ansi.StringWidth(line); got > 100 {
 			t.Fatalf("right-aligned row wider than terminal (%d cells): %q", got, line)
 		}
+	}
+}
+
+func TestHighlightFoldsDiacritics(t *testing.T) {
+	const open, close = "\x1b[1;33m", "\x1b[0m"
+	got := highlight("Café ordering", []string{"cafe"}, open, close)
+	want := open + "Café" + close + " ordering"
+	if got != want {
+		t.Fatalf("highlight = %q, want %q", got, want)
+	}
+}
+
+func TestHighlightSurvivesLowercaseByteShift(t *testing.T) {
+	const open, close = "\x1b[1;33m", "\x1b[0m"
+	// ẞ lowercases to ß (3 bytes -> 2), shifting later offsets; the offset
+	// map must come from builder positions or the wrap goes stale.
+	if got := highlight("ẞest", []string{"est"}, open, close); got != "ẞ"+open+"est"+close {
+		t.Fatalf("highlight = %q", got)
+	}
+	if got := highlight("menu ẞaß", []string{"a"}, open, close); got != "menu ẞ"+open+"a"+close+"ß" {
+		t.Fatalf("highlight = %q", got)
+	}
+	// A lone jamo matches only a prefix of Hangul's canonical decomposition:
+	// the mapped span is empty, so no empty styled pair may be emitted.
+	if got := highlight("한", []string{"ᄒ"}, open, close); got != "한" {
+		t.Fatalf("highlight = %q", got)
 	}
 }
 
@@ -173,22 +199,19 @@ func TestViewHighlightQueryTerms(t *testing.T) {
 			Directory: "/workspace/session-recall",
 			UpdatedAt: now,
 		},
-		Snippet: "The picker rows handle [ANSI] leaks.",
+		Snippet: "The picker rows handle ANSI leaks.",
 	}}
 	picker := &Picker{input: input, results: results, width: 100, height: 20, cursor: 0}
 	view := picker.View()
 	if !strings.Contains(view, "\x1b[1;33mpicker\x1b[0m") {
 		t.Fatalf("query term not highlighted in title: %q", view)
 	}
-	if !strings.Contains(view, "\x1b[0m\x1b[1;33mpicker\x1b[0m\x1b[2m") {
+	if !strings.Contains(view, "\x1b[0m\x1b[1;33mpicker\x1b[0m\x1b[38;5;249m") {
 		t.Fatalf("query term not highlighted in snippet: %q", view)
-	}
-	if strings.Contains(view, "[ANSI]") {
-		t.Fatalf("FTS bracket markers not stripped from snippet: %q", view)
 	}
 }
 
-func TestViewSnippetTopN(t *testing.T) {
+func TestViewSnippetOnlyForCursor(t *testing.T) {
 	results := make([]session.Match, 6)
 	for i := range results {
 		results[i] = session.Match{
@@ -204,16 +227,16 @@ func TestViewSnippetTopN(t *testing.T) {
 	}
 	picker := &Picker{input: textinput.New(), results: results, width: 120, height: 60, cursor: 5}
 	view := picker.View()
-	for i := 0; i < 3; i++ {
-		if !strings.Contains(view, fmt.Sprintf("unique-snippet-%d", i)) {
-			t.Fatalf("top snippet %d missing in view: %q", i, view)
-		}
-	}
 	if !strings.Contains(view, "unique-snippet-5") {
 		t.Fatalf("cursor row snippet missing in view: %q", view)
 	}
-	if got := strings.Count(view, "unique-snippet-"); got != 4 {
-		t.Fatalf("expected 4 snippets (top 3 + cursor), got %d", got)
+	for i := 0; i < 5; i++ {
+		if strings.Contains(view, fmt.Sprintf("unique-snippet-%d", i)) {
+			t.Fatalf("snippet %d shown for a non-cursor row: %q", i, view)
+		}
+	}
+	if !strings.Contains(view, "opencode \x1b[0m\n    \x1b[38;5;249munique-snippet-5\x1b[0m\n\n\x1b[2m↑↓") {
+		t.Fatalf("cursor content not indented under its row: %q", view)
 	}
 }
 
@@ -242,29 +265,41 @@ func TestViewRowLayout(t *testing.T) {
 	if strings.Contains(wview, strings.Repeat("T", 120)) {
 		t.Fatalf("wide mode left long title untruncated")
 	}
+	var slotStart = -1
 	for _, line := range strings.Split(wview, "\n") {
-		if strings.Contains(line, "\x1b[36m") {
-			if !strings.HasSuffix(line, "\x1b[36m   claude\x1b[0m") && !strings.HasSuffix(line, "\x1b[36m opencode\x1b[0m") {
-				t.Fatalf("wide mode row not right-aligned with provider column: %q", line)
-			}
-			if got := ansi.StringWidth(line); got != 120 {
-				t.Fatalf("wide mode row width %d, want 120: %q", got, line)
-			}
+		if !strings.Contains(line, "\x1b[36m") {
+			continue
+		}
+		if got := ansi.StringWidth(line); got != 120 {
+			t.Fatalf("wide mode row width %d, want 120: %q", got, line)
+		}
+		idx := strings.Index(line, "\x1b[36m")
+		start := ansi.StringWidth(line[:idx])
+		if slotStart == -1 {
+			slotStart = start
+		}
+		if start != slotStart {
+			t.Fatalf("provider first char not aligned: %q", line)
 		}
 	}
+	if slotStart != 111 {
+		t.Fatalf("provider column starts at %d, want 111 (width-9)", slotStart)
+	}
 
-	narrow := &Picker{input: textinput.New(), results: results, width: 60, height: 60}
-	nview := narrow.View()
-	if !strings.Contains(nview, "Short Title") {
-		t.Fatalf("narrow mode lost short title: %q", nview)
+	compact := &Picker{input: textinput.New(), results: results, width: 60, height: 60}
+	cview := compact.View()
+	if !strings.Contains(cview, "Short Title") {
+		t.Fatalf("compact width lost short title: %q", cview)
 	}
-	if !strings.Contains(nview, "  \x1b[2m") {
-		t.Fatalf("narrow mode missing indented meta line: %q", nview)
+	if !strings.Contains(cview, "/workspace/claude") {
+		t.Fatalf("compact width lost short row directory: %q", cview)
 	}
-	if !strings.Contains(nview, "/workspace/session-recall") {
-		t.Fatalf("narrow mode lost directory: %q", nview)
+	if !strings.Contains(cview, "T…") {
+		t.Fatalf("compact width should truncate the long title: %q", cview)
 	}
-	if !strings.Contains(nview, "\x1b[36m opencode\x1b[0m") {
-		t.Fatalf("narrow mode lost provider: %q", nview)
+	for _, line := range strings.Split(cview, "\n") {
+		if strings.Contains(line, "\x1b[36m") && ansi.StringWidth(line) > 60 {
+			t.Fatalf("compact width row wider than terminal (%d cells): %q", ansi.StringWidth(line), line)
+		}
 	}
 }

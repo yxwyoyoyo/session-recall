@@ -8,6 +8,9 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode"
+
+	"golang.org/x/text/unicode/norm"
 
 	"github.com/yxwyoyoyo/session-recall/internal/session"
 )
@@ -279,6 +282,12 @@ func (s *Store) ProviderStates() (map[string]ProviderState, error) {
 
 var searchToken = regexp.MustCompile(`[\p{L}\p{N}_-]+`)
 
+// fallbackToken splits on the same characters as FTS5's default unicode61
+// tokenizer, which treats '-' and '_' as separators. searchToken keeps them
+// inside one token for the ftsQuery phrase, so term-presence fallback checks
+// must use this narrower form or hyphenated queries never match.
+var fallbackToken = regexp.MustCompile(`[\p{L}\p{N}]+`)
+
 func ftsQuery(query string) string {
 	tokens := searchToken.FindAllString(query, -1)
 	parts := make([]string, 0, len(tokens))
@@ -311,29 +320,95 @@ func (s *Store) Search(ctx context.Context, query string, filters Filters) ([]se
 		args = append(args, filters.CWD)
 	}
 	args = append(args, filters.Limit)
-	// Rank a narrow (rowid, rank, updated_at) projection in the subquery, then
-	// fetch the limited top rows with snippet and metadata. Sorting and snippet
-	// extraction over every matching row, as in a single-level query, is the
-	// dominant cost when thousands of sessions match. Keeping updated_at in the
-	// subquery preserves the recency tiebreak when the limit cuts through a
-	// group of equal-rank rows.
+	// Rank and snippet in one pass: the auxiliary snippet() must run inside
+	// an FTS match context to get match spans, so MATCH stays in this query.
+	// The alternative two-level form (ranked subquery, outer MATCH refetch)
+	// re-iterated every matching rowid to evaluate snippet() on the limited
+	// top rows and measured slower in a best-of-3 benchmark on a synthetic
+	// 10k-session DB: 31.5 vs 20.6 ms at ~10k matches per query, 254.7 vs
+	// 229.7 ms with 500 matching tokens per document.
 	querySQL := `
 		SELECT s.provider, s.id, s.title, s.directory, s.updated_at, s.source,
-		       snippet(session_fts, 4, '[', ']', ' … ', 18), t.rank
-		FROM (SELECT session_fts.rowid AS r, bm25(session_fts) AS rank, s.updated_at AS upd
-		      FROM session_fts
-		      JOIN sessions s ON s.provider = session_fts.provider AND s.id = session_fts.session_id
-		      WHERE ` + strings.Join(conditions, " AND ") + `
-		      ORDER BY rank ASC, upd DESC LIMIT ?) t
-		JOIN session_fts ON session_fts.rowid = t.r
+		       snippet(session_fts, 4, '[', ']', ' … ', 18), bm25(session_fts)
+		FROM session_fts
 		JOIN sessions s ON s.provider = session_fts.provider AND s.id = session_fts.session_id
-		ORDER BY t.rank ASC, t.upd DESC`
+		WHERE ` + strings.Join(conditions, " AND ") + `
+		ORDER BY bm25(session_fts) ASC, s.updated_at DESC LIMIT ?`
 	rows, err := s.db.QueryContext(ctx, querySQL, args...)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	return scanMatches(rows, true)
+	matches, err := scanMatches(rows, true)
+	if err != nil {
+		return nil, err
+	}
+	// FTS brackets mark only the matched column; the content window can
+	// still lack the term when the match landed in the title or directory.
+	// Fall back so every snippet displays where the row matched, without
+	// trusting bracket presence (literal '[' in content would fake it).
+	// Tokens are derived with fallbackToken, mirroring how FTS5's unicode61
+	// tokenizer splits the query ("foo/bar" and "foo-bar" both become the
+	// terms foo and bar). Note the trade-off: a content window containing a
+	// query token (unbracketed, match actually in title/directory) counts as
+	// a hit and suppresses the fallback, keeping a still-relevant window.
+	tokens := FallbackTokens(query)
+	// Strip the FTS markers once so content windows and fallback text (plain
+	// titles or directories, which may contain literal '[') display alike.
+	for i := range matches {
+		matches[i].Snippet = StripBrackets(matches[i].Snippet)
+	}
+	for i := range matches {
+		if containsAny(matches[i].Snippet, tokens) {
+			continue
+		}
+		switch {
+		case containsAny(matches[i].Title, tokens):
+			matches[i].Snippet = matches[i].Title
+		case containsAny(matches[i].Directory, tokens):
+			matches[i].Snippet = matches[i].Directory
+		}
+	}
+	return matches, nil
+}
+
+// FallbackTokens splits a query into the terms FTS5's unicode61 tokenizer
+// would produce for it (hyphen and underscore act as separators, diacritics
+// are folded). Shared by the snippet fallback in Search and by the UI's
+// query-term highlighting.
+func FallbackTokens(query string) []string {
+	return fallbackToken.FindAllString(FoldDiacritics(strings.ToLower(query)), -1)
+}
+
+// containsAny reports whether any query token occurs in text,
+// case-insensitively and with diacritics folded, like FTS matching.
+func containsAny(text string, tokens []string) bool {
+	lower := FoldDiacritics(strings.ToLower(text))
+	for _, tok := range tokens {
+		if tok != "" && strings.Contains(lower, tok) {
+			return true
+		}
+	}
+	return false
+}
+
+// FoldDiacritics normalizes text to NFD and drops combining marks, so
+// "café" and "cafe" compare equal the way unicode61 remove_diacritics
+// matches them. Exported for the UI's query-term highlighting.
+func FoldDiacritics(text string) string {
+	nf := norm.NFD.String(text)
+	return strings.Map(func(r rune) rune {
+		if unicode.Is(unicode.Mn, r) {
+			return -1
+		}
+		return r
+	}, nf)
+}
+
+// StripBrackets removes the snippet context markers emitted by snippet().
+// Exported so the UI can display snippets without duplicating this.
+func StripBrackets(text string) string {
+	return strings.NewReplacer("[", "", "]", "").Replace(text)
 }
 
 func (s *Store) recent(ctx context.Context, filters Filters) ([]session.Match, error) {
