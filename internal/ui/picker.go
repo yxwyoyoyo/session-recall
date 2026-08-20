@@ -95,10 +95,35 @@ func (p *Picker) View() string {
 		return fmt.Sprintf("session-recall\n\n%s\n\nEsc cancel\n", p.err)
 	}
 	var out strings.Builder
-	out.WriteString("session-recall  ")
-	out.WriteString(p.input.View())
+	header := "session-recall  " + p.input.View()
+	count := fmt.Sprintf("%d / %d", min(p.cursor+1, len(p.results)), len(p.results))
+	if len(p.results) == 0 {
+		count = "0 / 0"
+	}
+	if p.width >= ansi.StringWidth(count)+10 {
+		headerWidth := p.width - ansi.StringWidth(count) - 1
+		out.WriteString(padToWidth(truncate(header, headerWidth), headerWidth))
+		out.WriteString(" \x1b[2m" + count + "\x1b[0m")
+	} else {
+		out.WriteString(truncate(header, p.width))
+	}
 	out.WriteString("\n\n")
-	visible := max(1, p.height-6)
+
+	mode := layoutForWidth(p.width)
+	baseLines := 1
+	if mode == layoutNarrow {
+		baseLines = 2
+	}
+	extraLines := 0
+	if len(p.results) > 0 {
+		if mode == layoutMedium {
+			extraLines++
+		}
+		if p.results[p.cursor].Snippet != "" {
+			extraLines++
+		}
+	}
+	visible := max(1, (p.height-6-extraLines)/baseLines)
 	start := 0
 	if p.cursor >= visible {
 		start = p.cursor - visible + 1
@@ -114,21 +139,35 @@ func (p *Picker) View() string {
 		age := index.FormatAge(item.UpdatedAt, time.Now())
 		dir := highlight(compactHome(item.Directory), tokens, "\x1b[0m\x1b[1;33m", "\x1b[0m\x1b[2m")
 		title := highlight(item.Title, tokens, "\x1b[1;33m", "\x1b[0m")
-		ageCol := "\x1b[2m" + age + "\x1b[0m"
-		provider := fmt.Sprintf("\x1b[36m%-9s\x1b[0m", item.Provider)
-		ageW := ansi.StringWidth(ageCol)
-		// The title is the primary field: give it the full budget and let
-		// the directory take whatever remains.
-		title = truncate(title, max(4, p.width-15-ageW))
-		dirBudget := max(0, p.width-15-ageW-ansi.StringWidth(title))
-		dirText := truncate(dir, dirBudget)
-		if dirBudget <= 4 {
-			dirText = ""
+		provider := fmt.Sprintf("\x1b[36m%9s\x1b[0m", item.Provider)
+		var line string
+		switch mode {
+		case layoutWide:
+			line = wideRow(marker, title, dir, age, provider, p.width)
+		case layoutMedium:
+			line = mediumRow(marker, title, age, provider, p.width)
+		case layoutNarrow:
+			line = truncate(marker+title, p.width)
 		}
-		dirCol := "\x1b[2m" + dirText + "\x1b[0m"
-		pad := max(1, p.width-3-ansi.StringWidth(title)-1-ageW-ansi.StringWidth(dirCol)-10)
-		out.WriteString(truncate(marker+title+" "+ageCol+strings.Repeat(" ", pad)+dirCol+" "+provider, p.width))
+		if i == p.cursor {
+			line = selectedRow(line, p.width)
+		}
+		out.WriteString(line)
 		out.WriteByte('\n')
+
+		if mode == layoutNarrow {
+			meta := item.Provider + " · " + age + " · " + compactHome(item.Directory)
+			if i == p.cursor {
+				meta = item.Provider + " · " + matchSource(item, tokens) + " · " + compactHome(item.Directory)
+			}
+			out.WriteString("   \x1b[2m" + truncate(meta, max(0, p.width-3)) + "\x1b[0m")
+			out.WriteByte('\n')
+		} else if mode == layoutMedium && i == p.cursor {
+			meta := compactHome(item.Directory) + " · " + matchSource(item, tokens)
+			out.WriteString("    \x1b[2m" + truncate(meta, max(0, p.width-4)) + "\x1b[0m")
+			out.WriteByte('\n')
+		}
+
 		if i == p.cursor && item.Snippet != "" {
 			snippet := strings.Join(strings.Fields(item.Snippet), " ")
 			snippet = highlight(snippet, tokens, "\x1b[0m\x1b[1;33m", "\x1b[0m\x1b[38;5;249m")
@@ -141,6 +180,83 @@ func (p *Picker) View() string {
 	}
 	out.WriteString("\n\x1b[2m↑↓ navigate  Enter resume  Esc cancel\x1b[0m\n")
 	return out.String()
+}
+
+type pickerLayout int
+
+const (
+	layoutNarrow pickerLayout = iota
+	layoutMedium
+	layoutWide
+)
+
+func layoutForWidth(width int) pickerLayout {
+	switch {
+	case width >= 90:
+		return layoutWide
+	case width >= 55:
+		return layoutMedium
+	default:
+		return layoutNarrow
+	}
+}
+
+func wideRow(marker, title, dir, age, provider string, width int) string {
+	available := max(0, width-25) // marker + separators + age + provider
+	dirWidth := min(24, max(16, available/3))
+	dirWidth = min(dirWidth, available)
+	titleWidth := max(0, available-dirWidth)
+	titleCol := padToWidth(truncate(title, titleWidth), titleWidth)
+	dirCol := "\x1b[2m" + padToWidth(truncate(dir, dirWidth), dirWidth) + "\x1b[0m"
+	ageCol := fmt.Sprintf("\x1b[2m%10s\x1b[0m", age)
+	return truncate(marker+titleCol+" "+dirCol+" "+ageCol+" "+provider, width)
+}
+
+func mediumRow(marker, title, age, provider string, width int) string {
+	titleWidth := max(0, width-24) // marker + separators + age + provider
+	titleCol := padToWidth(truncate(title, titleWidth), titleWidth)
+	ageCol := fmt.Sprintf("\x1b[2m%10s\x1b[0m", age)
+	return truncate(marker+titleCol+" "+ageCol+" "+provider, width)
+}
+
+func padToWidth(text string, width int) string {
+	return text + strings.Repeat(" ", max(0, width-ansi.StringWidth(text)))
+}
+
+// selectedRow uses reverse video so selection remains visible on both light
+// and dark terminals. Restore it after embedded resets from highlights/colors.
+func selectedRow(line string, width int) string {
+	line = padToWidth(truncate(line, width), width)
+	line = strings.ReplaceAll(line, "\x1b[0m", "\x1b[0m\x1b[7m")
+	return "\x1b[7m" + line + "\x1b[0m"
+}
+
+func matchSource(item session.Match, tokens []string) string {
+	switch {
+	case containsAllTokens(item.Title, tokens):
+		return "title match"
+	case containsAllTokens(item.Directory, tokens):
+		return "path match"
+	case containsAllTokens(item.Snippet, tokens):
+		return "content match"
+	case item.Snippet != "":
+		return "mixed match"
+	default:
+		return "recent"
+	}
+}
+
+func containsAllTokens(text string, tokens []string) bool {
+	if len(tokens) == 0 {
+		return false
+	}
+	text = index.FoldDiacritics(strings.ToLower(text))
+	for _, token := range tokens {
+		if token != "" && !strings.Contains(text, token) {
+			return false
+		}
+	}
+	return true
 }
 
 func compactHome(path string) string {
@@ -156,7 +272,10 @@ var homeDir = func() string { return "" }
 func SetHome(path string) { homeDir = func() string { return path } }
 
 func truncate(text string, width int) string {
-	if width <= 4 || ansi.StringWidth(text) <= width {
+	if width <= 0 {
+		return ""
+	}
+	if ansi.StringWidth(text) <= width {
 		return text
 	}
 	return ansi.Truncate(text, width, "…") + "\x1b[0m"
